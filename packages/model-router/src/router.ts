@@ -9,6 +9,10 @@ import {
   StubGenerationProvider,
   StubRerankProvider,
 } from './providers/stub.js';
+import {
+  TransformersEmbeddingProvider,
+  TransformersRerankProvider,
+} from './providers/transformers.js';
 import type {
   EmbeddingProvider,
   GenerationProvider,
@@ -31,10 +35,22 @@ function buildGeneration(config: ModelRouterConfig['generation']): GenerationPro
 }
 
 function buildEmbedding(config: ModelRouterConfig['embedding']): EmbeddingProvider {
+  if (config.provider === 'transformers') {
+    return new TransformersEmbeddingProvider(
+      config.model !== undefined
+        ? { dimensions: config.dimensions, model: config.model }
+        : { dimensions: config.dimensions },
+    );
+  }
   return new StubEmbeddingProvider(config.dimensions);
 }
 
-function buildRerank(_config: ModelRouterConfig['rerank']): RerankProvider {
+function buildRerank(config: ModelRouterConfig['rerank']): RerankProvider {
+  if (config.provider === 'transformers') {
+    return new TransformersRerankProvider(
+      config.model !== undefined ? { model: config.model } : {},
+    );
+  }
   return new StubRerankProvider();
 }
 

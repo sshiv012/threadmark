@@ -12,5 +12,6 @@ export * from './config.js';
 export * from './router.js';
 export * from './providers/stub.js';
 export * from './providers/gemini.js';
+export * from './providers/transformers.js';
 
 export const PACKAGE_NAME = '@threadmark/model-router';

@@ -2,12 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { loadModelRouterConfig, modelRouterConfigSchema } from './config.js';
 
 describe('loadModelRouterConfig', () => {
-  it('defaults everything to stub when no GEMINI_API_KEY is present (boots offline)', () => {
+  it('defaults generation to stub (no key) and embedding/rerank to local transformers', () => {
     const cfg = loadModelRouterConfig({});
     expect(cfg.generation.provider).toBe('stub');
+    expect(cfg.embedding.provider).toBe('transformers');
+    expect(cfg.rerank.provider).toBe('transformers');
+    expect(cfg.embedding.dimensions).toBe(384);
+  });
+
+  it('allows forcing stub embedding/rerank via env (fast offline dev)', () => {
+    const cfg = loadModelRouterConfig({
+      MODEL_EMBEDDING_PROVIDER: 'stub',
+      MODEL_RERANK_PROVIDER: 'stub',
+    });
     expect(cfg.embedding.provider).toBe('stub');
     expect(cfg.rerank.provider).toBe('stub');
-    expect(cfg.embedding.dimensions).toBe(384);
   });
 
   it('defaults generation to gemini when a key is present', () => {

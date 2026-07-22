@@ -18,6 +18,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "zod": "^4.4.3"
   }
 }
