@@ -10,10 +10,15 @@ describe('createChunkerRegistry', () => {
     expect(registry.get('tech_constraint').name).toBe('markdown');
   });
 
-  it('falls back to token-window for everything else (until PR5a-2 adds strategies)', () => {
-    expect(registry.get('interview').name).toBe('token-window');
-    expect(registry.get('support_ticket').name).toBe('token-window');
-    expect(registry.get('analytics').name).toBe('token-window');
+  it('routes evidence types to their dedicated strategies', () => {
+    expect(registry.get('interview').name).toBe('interview-turn');
+    expect(registry.get('support_ticket').name).toBe('message');
+    expect(registry.get('github_issue').name).toBe('message');
+    expect(registry.get('analytics').name).toBe('analytics');
+  });
+
+  it('falls back to token-window for unknown types', () => {
+    expect(registry.get('other').name).toBe('token-window');
     expect(registry.get('anything-unknown').name).toBe('token-window');
   });
 });
