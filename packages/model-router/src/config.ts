@@ -38,6 +38,11 @@ export type ModelRouterConfig = z.infer<typeof modelRouterConfigSchema>;
  * `stub` unless GEMINI_API_KEY is set. Embedding and rerank default to the local
  * `transformers` models (keyless; weights download once on first use); set
  * MODEL_EMBEDDING_PROVIDER / MODEL_RERANK_PROVIDER to `stub` for fast offline dev.
+ *
+ * Model names are overridable without touching code:
+ *   generation → GEMINI_MODEL
+ *   embedding  → MODEL_EMBEDDING_MODEL
+ *   rerank     → MODEL_RERANK_MODEL
  */
 export function loadModelRouterConfig(env: Record<string, string | undefined>): ModelRouterConfig {
   const hasGeminiKey = Boolean(env.GEMINI_API_KEY);
@@ -51,12 +56,14 @@ export function loadModelRouterConfig(env: Record<string, string | undefined>): 
     },
     embedding: {
       provider: env.MODEL_EMBEDDING_PROVIDER ?? 'transformers',
+      ...(env.MODEL_EMBEDDING_MODEL !== undefined ? { model: env.MODEL_EMBEDDING_MODEL } : {}),
       ...(env.MODEL_EMBEDDING_DIMENSIONS !== undefined
         ? { dimensions: Number(env.MODEL_EMBEDDING_DIMENSIONS) }
         : {}),
     },
     rerank: {
       provider: env.MODEL_RERANK_PROVIDER ?? 'transformers',
+      ...(env.MODEL_RERANK_MODEL !== undefined ? { model: env.MODEL_RERANK_MODEL } : {}),
     },
   });
 }

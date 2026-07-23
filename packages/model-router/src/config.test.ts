@@ -35,6 +35,15 @@ describe('loadModelRouterConfig', () => {
     expect(cfg.embedding.dimensions).toBe(768);
   });
 
+  it('reads custom embedding and rerank model names from env', () => {
+    const cfg = loadModelRouterConfig({
+      MODEL_EMBEDDING_MODEL: 'Xenova/bge-base-en-v1.5',
+      MODEL_RERANK_MODEL: 'Xenova/bge-reranker-large',
+    });
+    expect(cfg.embedding.model).toBe('Xenova/bge-base-en-v1.5');
+    expect(cfg.rerank.model).toBe('Xenova/bge-reranker-large');
+  });
+
   it('rejects an unknown provider', () => {
     expect(() =>
       modelRouterConfigSchema.parse({
