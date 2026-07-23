@@ -51,6 +51,17 @@ export const evidenceSourceType = pgEnum('evidence_source_type', [
   'other',
 ]);
 
+export const agentRunKind = pgEnum('agent_run_kind', ['ingestion', 'prd_generation']);
+
+export const agentRunStatus = pgEnum('agent_run_status', [
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+export const agentStepStatus = pgEnum('agent_step_status', ['running', 'completed', 'failed']);
+
 // ── Tables ───────────────────────────────────────────────────────────────────
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -108,15 +119,59 @@ export const chunks = pgTable(
     documentId: uuid('document_id')
       .notNull()
       .references(() => evidenceDocuments.id, { onDelete: 'cascade' }),
-    // Position within the document; unique per document for idempotent upserts.
+    // Ordering / display position only — NOT identity (shifts under edits).
     ord: integer('ord').notNull(),
+    // Stable identity within the document (heading path, message id, row key, …).
+    sourceKey: text('source_key').notNull(),
+    // Hash of normalized chunk text; unchanged hash on re-ingest ⇒ skip re-embed.
+    contentHash: text('content_hash').notNull(),
     text: text('text').notNull(),
     tokenCount: integer('token_count').notNull(),
     // Nullable: chunk text may be persisted before embeddings are computed.
     embedding: vector('embedding', { dimensions: EMBEDDING_DIMENSIONS }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex('chunks_document_ord_uniq').on(table.documentId, table.ord)],
+  // Idempotency key: stable source identity, not the shifting ordinal.
+  (table) => [uniqueIndex('chunks_document_source_key_uniq').on(table.documentId, table.sourceKey)],
+);
+
+export const agentRuns = pgTable(
+  'agent_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    kind: agentRunKind('kind').notNull(),
+    // The entity this run acts on (e.g. an evidence_document or prd id).
+    subjectId: uuid('subject_id').notNull(),
+    status: agentRunStatus('status').notNull().default('running'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+  },
+  (table) => [index('agent_runs_workspace_idx').on(table.workspaceId)],
+);
+
+export const agentSteps = pgTable(
+  'agent_steps',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
+    // Ordering within the run. Each retry attempt is its own row, so failures
+    // and retries stay visible rather than being overwritten.
+    ord: integer('ord').notNull(),
+    type: text('type').notNull(),
+    status: agentStepStatus('status').notNull().default('running'),
+    attempt: integer('attempt').notNull().default(1),
+    inputSummary: text('input_summary'),
+    outputSummary: text('output_summary'),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+  },
+  (table) => [index('agent_steps_run_idx').on(table.runId)],
 );
 
 // ── Inferred types ───────────────────────────────────────────────────────────
@@ -130,7 +185,14 @@ export type EvidenceDocument = typeof evidenceDocuments.$inferSelect;
 export type NewEvidenceDocument = typeof evidenceDocuments.$inferInsert;
 export type Chunk = typeof chunks.$inferSelect;
 export type NewChunk = typeof chunks.$inferInsert;
+export type AgentRun = typeof agentRuns.$inferSelect;
+export type NewAgentRun = typeof agentRuns.$inferInsert;
+export type AgentStep = typeof agentSteps.$inferSelect;
+export type NewAgentStep = typeof agentSteps.$inferInsert;
 
 export type MembershipRole = (typeof membershipRole.enumValues)[number];
 export type DocumentStatus = (typeof documentStatus.enumValues)[number];
 export type EvidenceSourceType = (typeof evidenceSourceType.enumValues)[number];
+export type AgentRunKind = (typeof agentRunKind.enumValues)[number];
+export type AgentRunStatus = (typeof agentRunStatus.enumValues)[number];
+export type AgentStepStatus = (typeof agentStepStatus.enumValues)[number];

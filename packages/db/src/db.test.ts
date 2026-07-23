@@ -7,14 +7,20 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from './client.js';
 import {
   addMembership,
+  appendAgentStep,
+  createAgentRun,
   createEvidenceDocument,
   createUser,
   createWorkspace,
+  getAgentRun,
   getChunksByDocument,
   getEvidenceDocument,
   getUserByEmail,
   getWorkspace,
+  listAgentSteps,
   listMemberships,
+  updateAgentRunStatus,
+  updateAgentStep,
   updateDocumentStatus,
   upsertChunks,
 } from './repositories.js';
@@ -112,7 +118,15 @@ describe('chunks', () => {
       (_, i) => i / EMBEDDING_DIMENSIONS,
     );
     const [chunk] = await upsertChunks(db, [
-      { documentId: doc.id, ord: 0, text: 'hello', tokenCount: 1, embedding },
+      {
+        documentId: doc.id,
+        ord: 0,
+        sourceKey: 'win:0',
+        contentHash: 'h0',
+        text: 'hello',
+        tokenCount: 1,
+        embedding,
+      },
     ]);
     const stored = chunk!.embedding!;
     expect(stored).toHaveLength(EMBEDDING_DIMENSIONS);
@@ -123,23 +137,94 @@ describe('chunks', () => {
     }
   });
 
-  it('is idempotent on (document_id, ord) — re-ingesting upserts, not duplicates', async () => {
+  it('is idempotent on (document_id, source_key) even when the ordinal shifts', async () => {
     const doc = await seedDocument();
-    await upsertChunks(db, [{ documentId: doc.id, ord: 0, text: 'v1', tokenCount: 1 }]);
-    await upsertChunks(db, [{ documentId: doc.id, ord: 0, text: 'v2', tokenCount: 2 }]);
+    await upsertChunks(db, [
+      {
+        documentId: doc.id,
+        ord: 0,
+        sourceKey: 'overview',
+        contentHash: 'h1',
+        text: 'v1',
+        tokenCount: 1,
+      },
+    ]);
+    // Same source_key, different ordinal + content → updates the same row.
+    await upsertChunks(db, [
+      {
+        documentId: doc.id,
+        ord: 5,
+        sourceKey: 'overview',
+        contentHash: 'h2',
+        text: 'v2',
+        tokenCount: 2,
+      },
+    ]);
 
     const stored = await getChunksByDocument(db, doc.id);
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ text: 'v2', tokenCount: 2 });
+    expect(stored[0]).toMatchObject({ text: 'v2', tokenCount: 2, ord: 5, contentHash: 'h2' });
   });
 
   it('orders chunks by ord', async () => {
     const doc = await seedDocument();
     await upsertChunks(db, [
-      { documentId: doc.id, ord: 2, text: 'c', tokenCount: 1 },
-      { documentId: doc.id, ord: 0, text: 'a', tokenCount: 1 },
-      { documentId: doc.id, ord: 1, text: 'b', tokenCount: 1 },
+      { documentId: doc.id, ord: 2, sourceKey: 'c', contentHash: 'hc', text: 'c', tokenCount: 1 },
+      { documentId: doc.id, ord: 0, sourceKey: 'a', contentHash: 'ha', text: 'a', tokenCount: 1 },
+      { documentId: doc.id, ord: 1, sourceKey: 'b', contentHash: 'hb', text: 'b', tokenCount: 1 },
     ]);
     expect((await getChunksByDocument(db, doc.id)).map((c) => c.text)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('agent runs and steps (observability)', () => {
+  async function seedRun() {
+    const { workspace } = await seedWorkspaceAndUser();
+    const run = await createAgentRun(db, {
+      workspaceId: workspace.id,
+      kind: 'ingestion',
+      subjectId: workspace.id, // stand-in subject for the test
+    });
+    return run;
+  }
+
+  it('creates a run in the running state and completes it', async () => {
+    const run = await seedRun();
+    expect(run.status).toBe('running');
+    expect(run.endedAt).toBeNull();
+
+    const endedAt = new Date('2026-07-22T00:00:00Z');
+    await updateAgentRunStatus(db, run.id, 'completed', endedAt);
+    const after = await getAgentRun(db, run.id);
+    expect(after).toMatchObject({ status: 'completed' });
+    expect(after!.endedAt).toEqual(endedAt);
+  });
+
+  it('records each step attempt as its own row, preserving retries and failures', async () => {
+    const run = await seedRun();
+
+    const attempt1 = await appendAgentStep(db, {
+      runId: run.id,
+      ord: 0,
+      type: 'embedChunks',
+      attempt: 1,
+    });
+    await updateAgentStep(db, attempt1.id, { status: 'failed', error: 'provider timeout' });
+
+    const attempt2 = await appendAgentStep(db, {
+      runId: run.id,
+      ord: 1,
+      type: 'embedChunks',
+      attempt: 2,
+    });
+    await updateAgentStep(db, attempt2.id, {
+      status: 'completed',
+      outputSummary: '3 vectors',
+    });
+
+    const steps = await listAgentSteps(db, run.id);
+    expect(steps).toHaveLength(2);
+    expect(steps[0]).toMatchObject({ attempt: 1, status: 'failed', error: 'provider timeout' });
+    expect(steps[1]).toMatchObject({ attempt: 2, status: 'completed', outputSummary: '3 vectors' });
   });
 });
