@@ -2,12 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { loadModelRouterConfig, modelRouterConfigSchema } from './config.js';
 
 describe('loadModelRouterConfig', () => {
-  it('defaults everything to stub when no GEMINI_API_KEY is present (boots offline)', () => {
+  it('defaults generation to stub (no key) and embedding/rerank to local transformers', () => {
     const cfg = loadModelRouterConfig({});
     expect(cfg.generation.provider).toBe('stub');
+    expect(cfg.embedding.provider).toBe('transformers');
+    expect(cfg.rerank.provider).toBe('transformers');
+    expect(cfg.embedding.dimensions).toBe(384);
+  });
+
+  it('allows forcing stub embedding/rerank via env (fast offline dev)', () => {
+    const cfg = loadModelRouterConfig({
+      MODEL_EMBEDDING_PROVIDER: 'stub',
+      MODEL_RERANK_PROVIDER: 'stub',
+    });
     expect(cfg.embedding.provider).toBe('stub');
     expect(cfg.rerank.provider).toBe('stub');
-    expect(cfg.embedding.dimensions).toBe(384);
   });
 
   it('defaults generation to gemini when a key is present', () => {
@@ -24,6 +33,15 @@ describe('loadModelRouterConfig', () => {
   it('reads a custom embedding dimension', () => {
     const cfg = loadModelRouterConfig({ MODEL_EMBEDDING_DIMENSIONS: '768' });
     expect(cfg.embedding.dimensions).toBe(768);
+  });
+
+  it('reads custom embedding and rerank model names from env', () => {
+    const cfg = loadModelRouterConfig({
+      MODEL_EMBEDDING_MODEL: 'Xenova/bge-base-en-v1.5',
+      MODEL_RERANK_MODEL: 'Xenova/bge-reranker-large',
+    });
+    expect(cfg.embedding.model).toBe('Xenova/bge-base-en-v1.5');
+    expect(cfg.rerank.model).toBe('Xenova/bge-reranker-large');
   });
 
   it('rejects an unknown provider', () => {
