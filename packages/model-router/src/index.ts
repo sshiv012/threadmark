@@ -1,12 +1,16 @@
 /**
- * @threadmark/model-router — configurable provider registry for text
- * generation, embeddings, and reranking, each behind an interface.
+ * @threadmark/model-router — the model boundary. Configurable providers for
+ * text generation, embeddings, and reranking, each behind an interface.
  *
- * Default dev profile (later PRs): Gemini 2.5 Flash for generation; local
- * Transformers.js ONNX models (bge-small-en-v1.5 embeddings, bge-reranker-base
- * rerank) that run offline with no API keys. Every model side effect flows
- * through this package — no direct SDK calls elsewhere.
- *
- * Placeholder export for the scaffold. Interfaces + adapters land in PR4.
+ * Default dev profile: Gemini 2.5 Flash for generation (when GEMINI_API_KEY is
+ * set) and deterministic stubs otherwise. Local Transformers.js embedding +
+ * rerank adapters arrive in PR4b. Every model call flows through here — no
+ * provider SDK is called directly elsewhere.
  */
+export * from './types.js';
+export * from './config.js';
+export * from './router.js';
+export * from './providers/stub.js';
+export * from './providers/gemini.js';
+
 export const PACKAGE_NAME = '@threadmark/model-router';
