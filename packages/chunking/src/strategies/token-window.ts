@@ -11,6 +11,12 @@ import type {
  * Universal fallback: sliding window over words with configurable overlap.
  * Positional by nature, so `sourceKey` is window-index based; `contentHash`
  * still prevents re-embedding identical windows.
+ *
+ * NOTE: windows are sized by whitespace-separated WORDS, not by the injected
+ * TokenCounter — the counter only reports `tokenCount` after the boundary is
+ * chosen; it does not move the boundary. Safe while the default counter is
+ * word-based. Bounding by a subword tokenizer (so chunks never exceed a model's
+ * token limit) needs a tokenizer with encode/offsets — tracked as a follow-up.
  */
 export class TokenWindowChunker implements Chunker {
   readonly name = 'token-window';
