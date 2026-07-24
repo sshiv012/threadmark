@@ -15,9 +15,18 @@ export interface SearchHit {
   score: number;
 }
 
+export interface IndexOptions {
+  /**
+   * Force an index refresh so writes are immediately searchable. Defaults to
+   * false — refreshing after every batch throttles indexing throughput; enable
+   * it only when you need read-after-write (e.g. tests).
+   */
+  refresh?: boolean;
+}
+
 export interface SearchIndex {
   ensureIndex(index: string): Promise<void>;
-  indexChunks(index: string, chunks: IndexedChunk[]): Promise<void>;
+  indexChunks(index: string, chunks: IndexedChunk[], options?: IndexOptions): Promise<void>;
   searchBm25(index: string, query: string, topK: number): Promise<SearchHit[]>;
   /** Remove all chunks belonging to a document (re-ingest / delete). */
   deleteByDocument(index: string, documentId: string): Promise<void>;

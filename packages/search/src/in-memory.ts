@@ -1,4 +1,4 @@
-import type { IndexedChunk, SearchHit, SearchIndex } from './types.js';
+import type { IndexedChunk, IndexOptions, SearchHit, SearchIndex } from './types.js';
 
 function tokenize(text: string): string[] {
   return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
@@ -26,7 +26,7 @@ export class InMemorySearchIndex implements SearchIndex {
     return Promise.resolve();
   }
 
-  indexChunks(index: string, chunks: IndexedChunk[]): Promise<void> {
+  indexChunks(index: string, chunks: IndexedChunk[], _options?: IndexOptions): Promise<void> {
     const map = this.index(index);
     for (const chunk of chunks) map.set(chunk.id, chunk);
     return Promise.resolve();

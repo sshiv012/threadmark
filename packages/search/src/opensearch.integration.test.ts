@@ -17,10 +17,14 @@ describe.skipIf(!run)('OpenSearchIndex (integration)', () => {
 
   it('indexes chunks and finds the relevant one via BM25, then deletes by document', async () => {
     await search.ensureIndex(index);
-    await search.indexChunks(index, [
-      { id: 'it-a', documentId: 'd1', text: 'the monthly billing invoice totals' },
-      { id: 'it-b', documentId: 'd1', text: 'sharing dashboards externally via a public link' },
-    ]);
+    await search.indexChunks(
+      index,
+      [
+        { id: 'it-a', documentId: 'd1', text: 'the monthly billing invoice totals' },
+        { id: 'it-b', documentId: 'd1', text: 'sharing dashboards externally via a public link' },
+      ],
+      { refresh: true },
+    );
     const hits = await search.searchBm25(index, 'external dashboard sharing', 5);
     expect(hits[0]!.id).toBe('it-b');
 
