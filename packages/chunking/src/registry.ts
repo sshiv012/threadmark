@@ -1,24 +1,32 @@
+import { AnalyticsChunker } from './strategies/analytics.js';
+import { InterviewTurnChunker } from './strategies/interview-turn.js';
 import { MarkdownChunker } from './strategies/markdown.js';
+import { MessageChunker } from './strategies/message.js';
 import { TokenWindowChunker } from './strategies/token-window.js';
 import { heuristicTokenCounter } from './tokens.js';
-import type { ChunkerRegistry, TokenCounter } from './types.js';
-
-/**
- * Evidence source types that are markdown/prose-shaped. Interview, ticket, and
- * analytics types fall back to token-window until PR5a-2 adds dedicated
- * turn/message/row strategies.
- */
-const MARKDOWN_SOURCE_TYPES = new Set(['product_doc', 'prior_prd', 'tech_constraint']);
+import type { Chunker, ChunkerRegistry, TokenCounter } from './types.js';
 
 export function createChunkerRegistry(
   options: { tokenCounter?: TokenCounter } = {},
 ): ChunkerRegistry {
   const tokenCounter = options.tokenCounter ?? heuristicTokenCounter;
-  const markdown = new MarkdownChunker(tokenCounter);
   const tokenWindow = new TokenWindowChunker(tokenCounter);
+  const markdown = new MarkdownChunker(tokenCounter);
+
+  // PRDs and design docs are the core corpus → markdown is the priority strategy.
+  const byType: Record<string, Chunker> = {
+    product_doc: markdown,
+    prior_prd: markdown,
+    tech_constraint: markdown,
+    interview: new InterviewTurnChunker(tokenCounter),
+    support_ticket: new MessageChunker(tokenCounter),
+    github_issue: new MessageChunker(tokenCounter),
+    analytics: new AnalyticsChunker(tokenCounter),
+  };
+
   return {
     get(sourceType) {
-      return MARKDOWN_SOURCE_TYPES.has(sourceType) ? markdown : tokenWindow;
+      return byType[sourceType] ?? tokenWindow;
     },
   };
 }
