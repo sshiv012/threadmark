@@ -34,7 +34,7 @@ If a dashboard mixes internal and external-appropriate content, use **Share a vi
 
 ## Sending the Link
 
-You can distribute the copied URL through any channel — email, Slack, a customer portal. For higher-touch delivery, use **Send via email** in the share dialog: enter recipient addresses and Threadmark emails each person an individual link. Individual links let you revoke one recipient without affecting the others and produce cleaner audit logs.
+You can distribute the copied URL through any channel — email, Slack, a customer portal. For higher-touch delivery, use **Send via email** in the share dialog: enter recipient addresses and Threadmark emails them the link. Note that all recipients currently share a **single link**, so revoking or expiring it affects everyone at once, and the audit log attributes activity to the link rather than to an individual. Per-recipient links — revoking or auditing one recipient without affecting the others — are a frequently requested capability that isn't available yet.
 
 ## What Recipients Experience
 

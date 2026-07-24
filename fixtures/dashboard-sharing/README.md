@@ -36,4 +36,16 @@ seeds a few capability **gaps** (e.g. no per-recipient links, no auto PII
 redaction) so retrieval surfaces tension between what customers ask for and what
 exists.
 
+## Manifest & timeline
+
+`manifest.csv` lists every document with a stable `doc_id`, its `source_type`,
+and an `effective_date`. The dates encode a deliberate **capability timeline** so
+retrieval and evals can distinguish *historical tension* from an *unresolvable
+contradiction*: e.g. the `feature_requests` export (2025-11) lists SSO for
+external viewers and view auditing as requested/planned, whereas the product
+docs (2026-06) describe them as available — the later effective date resolves
+the apparent conflict rather than contradicting it. Capability **gaps** that are
+still open at the latest date (per-recipient links, automatic PII redaction) are
+consistently described as unavailable across docs.
+
 Ingested via `pnpm seed` (added with the retrieval work).
