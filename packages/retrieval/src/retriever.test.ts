@@ -69,7 +69,7 @@ beforeEach(async () => {
   const stored = await getChunksByDocument(db, doc.id);
   const embedded = await router.embed({ input: stored.map((c) => c.text) });
   for (let i = 0; i < stored.length; i++) {
-    await setChunkEmbedding(db, stored[i]!.id, embedded.vectors[i]!);
+    await setChunkEmbedding(db, stored[i]!.id, embedded.vectors[i]!, embedded.model);
   }
   await search.ensureIndex(CHUNK_INDEX);
   await search.indexChunks(
