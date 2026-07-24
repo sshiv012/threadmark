@@ -1,0 +1,33 @@
+topic_id,topic,tickets,avg_resolution_days,quarter
+SV-3001,"external sharing",142,2.4,2025-Q3
+SV-3002,"link expiry",88,1.8,2025-Q3
+SV-3003,"permissions",76,3.1,2025-Q3
+SV-3004,"SSO",54,4.2,2025-Q3
+SV-3005,"billing",61,1.2,2025-Q3
+SV-3006,"external sharing",176,2.6,2025-Q4
+SV-3007,"link expiry",103,1.9,2025-Q4
+SV-3008,"permissions",91,3.4,2025-Q4
+SV-3009,"SSO",72,4.6,2025-Q4
+SV-3010,"watermarking",38,2.1,2025-Q4
+SV-3011,"revoke access",44,1.5,2025-Q4
+SV-3012,"billing",58,1.1,2025-Q4
+SV-3013,"external sharing",211,2.8,2026-Q1
+SV-3014,"link expiry",129,2.0,2026-Q1
+SV-3015,"permissions",108,3.6,2026-Q1
+SV-3016,"SSO",97,4.9,2026-Q1
+SV-3017,"audit logs",41,2.3,2026-Q1
+SV-3018,"watermarking",47,2.2,2026-Q1
+SV-3019,"embedding",33,3.0,2026-Q1
+SV-3020,"billing",63,1.3,2026-Q1
+SV-3021,"onboarding",71,1.7,2026-Q1
+SV-3022,"external sharing",243,2.9,2026-Q2
+SV-3023,"link expiry",151,2.1,2026-Q2
+SV-3024,"permissions",122,3.7,2026-Q2
+SV-3025,"SSO",114,5.1,2026-Q2
+SV-3026,"audit logs",58,2.5,2026-Q2
+SV-3027,"watermarking",61,2.4,2026-Q2
+SV-3028,"revoke access",67,1.6,2026-Q2
+SV-3029,"embedding",49,3.3,2026-Q2
+SV-3030,"failed access attempts",52,2.0,2026-Q2
+SV-3031,"billing",69,1.2,2026-Q2
+SV-3032,"integrations",44,2.7,2026-Q2

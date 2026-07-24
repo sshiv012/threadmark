@@ -1,0 +1,33 @@
+request_id,title,votes,segment,quarter,status
+FR-1001,"Secure external links for read-only dashboard sharing",312,enterprise,2025-Q3,shipped
+FR-1002,"Set expiry dates on shared dashboard links",287,enterprise,2025-Q3,shipped
+FR-1003,"Revoke a shared link instantly across all viewers",254,mid-market,2025-Q3,in-progress
+FR-1004,"SSO enforcement for external dashboard viewers",241,enterprise,2025-Q4,in-progress
+FR-1005,"Audit log of who viewed a shared dashboard and when",233,enterprise,2025-Q4,planned
+FR-1006,"Dynamic watermarking with viewer email on shared views",198,enterprise,2025-Q4,planned
+FR-1007,"Granular per-viewer permissions on shared dashboards",187,mid-market,2025-Q4,in-progress
+FR-1008,"Embed shared dashboards in external portals via iframe",176,mid-market,2026-Q1,planned
+FR-1009,"Password-protect a shared dashboard link",164,smb,2025-Q3,shipped
+FR-1010,"Notify owner when a shared link is accessed",151,smb,2026-Q1,planned
+FR-1011,"Bulk-revoke all links shared by a departed teammate",149,enterprise,2026-Q1,planned
+FR-1012,"Domain allowlist for external share recipients",142,enterprise,2026-Q1,in-progress
+FR-1013,"Auto-expire links after N days of inactivity",138,mid-market,2026-Q1,planned
+FR-1014,"Downloadable PDF export of shared dashboard with watermark",127,nonprofit,2025-Q4,planned
+FR-1015,"View-only mode that disables copy and export on shares",119,nonprofit,2026-Q1,planned
+FR-1016,"SCIM provisioning for external viewer accounts",112,enterprise,2026-Q2,planned
+FR-1017,"Per-link analytics: unique external viewers and dwell time",108,mid-market,2026-Q2,planned
+FR-1018,"Require re-authentication for sensitive shared dashboards",101,enterprise,2026-Q2,planned
+FR-1019,"Custom branding on external share landing page",94,mid-market,2026-Q2,planned
+FR-1020,"Slack alert when a failed access attempt hits a shared link",88,smb,2026-Q2,planned
+FR-1021,"Time-boxed access windows for shared links (business hours)",81,nonprofit,2026-Q2,planned
+FR-1022,"Watermark opacity and position controls",73,enterprise,2026-Q2,planned
+FR-1023,"One-click revoke from the audit log entry",69,mid-market,2026-Q2,planned
+FR-1024,"Geofencing for external dashboard access by region",61,enterprise,2026-Q2,planned
+FR-1025,"Dark mode for the Threadmark editor",204,smb,2025-Q3,shipped
+FR-1026,"Real-time co-editing presence cursors in PRDs",176,mid-market,2025-Q4,shipped
+FR-1027,"Inline evidence citations linked to source documents",168,enterprise,2025-Q4,in-progress
+FR-1028,"Keyboard shortcuts for the PRD outline panel",97,smb,2026-Q1,planned
+FR-1029,"Jira sync for PRD acceptance criteria",143,mid-market,2026-Q1,planned
+FR-1030,"Version history diff view for PRDs",131,enterprise,2026-Q2,planned
+FR-1031,"AI summary of long PRD threads",159,nonprofit,2026-Q2,planned
+FR-1032,"Comment resolution workflow with assignees",84,smb,2025-Q4,shipped
