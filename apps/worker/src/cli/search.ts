@@ -11,12 +11,27 @@ import { OpenSearchIndex } from '@threadmark/search';
 import { Redis } from 'ioredis';
 import { env } from '../env.js';
 
+function numericFlag(args: string[], name: string): number | undefined {
+  const index = args.indexOf(`--${name}`);
+  const value = index >= 0 ? args[index + 1] : undefined;
+  const parsed = value !== undefined ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 async function main(): Promise<void> {
-  const query = process.argv[2];
+  const args = process.argv.slice(2);
+  const query = args.find((a) => !a.startsWith('--'));
   if (!query) {
-    console.error('usage: pnpm search "<query>"');
+    console.error('usage: pnpm search "<query>" [--candidates N] [--topk N]');
     process.exit(1);
   }
+  const candidateK = numericFlag(args, 'candidates');
+  const topK = numericFlag(args, 'topk');
+  const options = {
+    workspaceId: '',
+    ...(candidateK !== undefined ? { candidateK } : {}),
+    ...(topK !== undefined ? { topK } : {}),
+  };
 
   const { db, close } = createDb(env.databaseUrl);
   const redis = new Redis(env.redisUrl);
@@ -29,8 +44,9 @@ async function main(): Promise<void> {
 
   try {
     const workspace = await findOrCreateWorkspaceByName(db, 'Dev Workspace');
-    const cold = await retriever.search(query, { workspaceId: workspace.id });
-    const warm = await retriever.search(query, { workspaceId: workspace.id });
+    options.workspaceId = workspace.id;
+    const cold = await retriever.search(query, options);
+    const warm = await retriever.search(query, options);
 
     console.log(`\nquery: "${query}"`);
     console.log(

@@ -33,6 +33,11 @@ function cacheKey(query: string, workspaceId: string, topK: number, candidateK: 
     .slice(0, 32);
 }
 
+/** Map a raw cross-encoder logit to a readable 0–1 relevance (monotonic). */
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
 export function createRetriever(deps: RetrieverDeps): Retriever {
   const cache = deps.cache ?? new NoopCache();
   const chunkIndex = deps.chunkIndex ?? CHUNK_INDEX;
@@ -86,7 +91,7 @@ export function createRetriever(deps: RetrieverDeps): Retriever {
           documentTitle: row.documentTitle,
           sourceType: row.sourceType,
           text: row.text,
-          rerankScore: r.score,
+          rerankScore: sigmoid(r.score),
           ...(vectorRank.has(r.id) ? { vectorRank: vectorRank.get(r.id)! } : {}),
           ...(lexicalRank.has(r.id) ? { lexicalRank: lexicalRank.get(r.id)! } : {}),
         };

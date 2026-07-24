@@ -6,7 +6,7 @@ export interface RetrievedChunk {
   documentTitle: string;
   sourceType: EvidenceSourceType;
   text: string;
-  /** Cross-encoder relevance score from the reranker. */
+  /** Reranker relevance in [0,1] (sigmoid of the cross-encoder logit). */
   rerankScore: number;
   /** 1-based rank in the vector list (undefined if it wasn't a vector hit). */
   vectorRank?: number;
