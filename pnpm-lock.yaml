@@ -41,6 +41,8 @@ importers:
 
   apps/worker: {}
 
+  packages/chunking: {}
+
   packages/config: {}
 
   packages/core: {}
