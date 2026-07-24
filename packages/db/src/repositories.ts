@@ -4,7 +4,7 @@
  *
  * Kept minimal for PR3 — just what ingestion (PR5) and its tests need.
  */
-import { and, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import type { Database } from './client.js';
 import {
   agentRuns,
@@ -282,6 +282,32 @@ export interface RetrievalChunk {
 }
 
 /** Load chunk text + owning-document metadata for a set of chunk ids. */
+/** All documents in a workspace, newest first (dashboard read). */
+export async function listEvidenceDocuments(
+  db: Database,
+  workspaceId: string,
+): Promise<EvidenceDocument[]> {
+  return db
+    .select()
+    .from(evidenceDocuments)
+    .where(eq(evidenceDocuments.workspaceId, workspaceId))
+    .orderBy(desc(evidenceDocuments.createdAt));
+}
+
+/** Recent agent runs in a workspace, newest first (dashboard read). */
+export async function listAgentRuns(
+  db: Database,
+  workspaceId: string,
+  limit = 20,
+): Promise<AgentRun[]> {
+  return db
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.workspaceId, workspaceId))
+    .orderBy(desc(agentRuns.startedAt))
+    .limit(limit);
+}
+
 export async function getRetrievalChunksByIds(
   db: Database,
   ids: string[],

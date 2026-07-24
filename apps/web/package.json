@@ -4,9 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@threadmark/db": "workspace:^",
+    "@threadmark/model-router": "workspace:^",
+    "@threadmark/retrieval": "workspace:^",
+    "@threadmark/search": "workspace:^",
+    "ioredis": "^5.11.1",
+    "next": "^15",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
   }
 }
