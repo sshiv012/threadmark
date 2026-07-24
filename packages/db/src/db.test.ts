@@ -166,6 +166,53 @@ describe('chunks', () => {
     expect(stored[0]).toMatchObject({ text: 'v2', tokenCount: 2, ord: 5, contentHash: 'h2' });
   });
 
+  it('preserves the embedding on re-ingest when content is unchanged, clears it when changed', async () => {
+    const doc = await seedDocument();
+    const embedding = Array.from({ length: EMBEDDING_DIMENSIONS }, (_, i) => (i % 7) / 10);
+
+    // Initial: an embedded chunk.
+    await upsertChunks(db, [
+      {
+        documentId: doc.id,
+        ord: 0,
+        sourceKey: 'overview',
+        contentHash: 'h1',
+        text: 'v1',
+        tokenCount: 1,
+        embedding,
+      },
+    ]);
+
+    // Re-ingest same content WITHOUT recomputing the vector → existing vector kept.
+    await upsertChunks(db, [
+      {
+        documentId: doc.id,
+        ord: 0,
+        sourceKey: 'overview',
+        contentHash: 'h1',
+        text: 'v1',
+        tokenCount: 1,
+      },
+    ]);
+    let [chunk] = await getChunksByDocument(db, doc.id);
+    expect(chunk!.embedding).not.toBeNull();
+    expect(chunk!.embedding).toHaveLength(EMBEDDING_DIMENSIONS);
+
+    // Content changed with no new vector → the stale vector is cleared for re-embed.
+    await upsertChunks(db, [
+      {
+        documentId: doc.id,
+        ord: 0,
+        sourceKey: 'overview',
+        contentHash: 'h2',
+        text: 'v2',
+        tokenCount: 1,
+      },
+    ]);
+    [chunk] = await getChunksByDocument(db, doc.id);
+    expect(chunk!.embedding).toBeNull();
+  });
+
   it('orders chunks by ord', async () => {
     const doc = await seedDocument();
     await upsertChunks(db, [

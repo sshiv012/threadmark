@@ -105,6 +105,13 @@ export async function updateDocumentStatus(
  * (document_id, source_key) — not the shifting ordinal — so edits elsewhere in
  * a document don't duplicate or churn unrelated chunks. Backs the "retryable
  * operations are idempotent" invariant.
+ *
+ * Embedding is preserved when the content is unchanged: if the incoming
+ * content_hash matches the stored one, the existing vector is kept (so a
+ * re-ingest that writes chunk text without recomputing embeddings does NOT
+ * clobber a valid vector — the "unchanged hash ⇒ skip re-embed" guarantee).
+ * When the content changed, the incoming embedding wins (a new vector, or NULL
+ * to clear the now-stale one for a later embed pass).
  */
 export async function upsertChunks(db: Database, rows: NewChunk[]): Promise<Chunk[]> {
   if (rows.length === 0) return [];
@@ -118,7 +125,7 @@ export async function upsertChunks(db: Database, rows: NewChunk[]): Promise<Chun
         text: sql`excluded.text`,
         contentHash: sql`excluded.content_hash`,
         tokenCount: sql`excluded.token_count`,
-        embedding: sql`excluded.embedding`,
+        embedding: sql`CASE WHEN ${chunks.contentHash} = excluded.content_hash THEN ${chunks.embedding} ELSE excluded.embedding END`,
       },
     })
     .returning();
