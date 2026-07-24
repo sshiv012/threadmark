@@ -52,7 +52,7 @@ export class AnalyticsChunker implements Chunker {
     this.fallback = new TokenWindowChunker(tokenCounter);
   }
 
-  chunk(document: ExtractedDocument, options: ChunkingOptions): Promise<ChunkCandidate[]> {
+  async chunk(document: ExtractedDocument, options: ChunkingOptions): Promise<ChunkCandidate[]> {
     const lines = document.text.split('\n').filter((line) => line.trim() !== '');
     // Not CSV-like (no header row with delimiters) → fall back.
     if (lines.length < 2 || !lines[0]!.includes(',')) {
@@ -60,9 +60,12 @@ export class AnalyticsChunker implements Chunker {
     }
 
     const header = parseCsvLine(lines[0]!);
+    const rows = lines.slice(1);
     const candidates: ChunkCandidate[] = [];
-    lines.slice(1).forEach((line, index) => {
-      const values = parseCsvLine(line);
+    let ord = 0;
+
+    for (let index = 0; index < rows.length; index++) {
+      const values = parseCsvLine(rows[index]!);
       const record: Record<string, string> = {};
       header.forEach((column, i) => {
         record[column] = values[i] ?? '';
@@ -71,15 +74,31 @@ export class AnalyticsChunker implements Chunker {
       // Stable identity: the first column value (a natural row key), not the
       // ordinal — falling back to the index only when it is blank.
       const keyValue = (values[0] ?? '').trim() || String(index);
-      candidates.push({
-        text,
-        tokenCount: this.tokenCounter.count(text),
-        ord: index,
-        sourceKey: `row:${keyValue}`,
-        contentHash: hashContent(text),
-        metadata: record,
-      });
-    });
-    return Promise.resolve(candidates);
+      const sourceKey = `row:${keyValue}`;
+      const tokenCount = this.tokenCounter.count(text);
+
+      if (tokenCount <= options.maxTokens) {
+        candidates.push({
+          text,
+          tokenCount,
+          ord: ord++,
+          sourceKey,
+          contentHash: hashContent(text),
+          metadata: record,
+        });
+        continue;
+      }
+      // Oversized row (e.g. a very long cell) → window it, like other strategies.
+      const subs = await this.fallback.chunk({ sourceType: document.sourceType, text }, options);
+      for (const sub of subs) {
+        candidates.push({
+          ...sub,
+          ord: ord++,
+          sourceKey: `${sourceKey}/${sub.sourceKey}`,
+          metadata: record,
+        });
+      }
+    }
+    return candidates;
   }
 }

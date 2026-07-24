@@ -20,6 +20,12 @@ interface Turn {
  * Interview/transcript chunker: one chunk per speaker turn. Continuation lines
  * join the current turn. Falls back to token-window when no speaker labels are
  * present. Oversized turns are windowed under the turn's source key.
+ *
+ * NOTE: `sourceKey` is positional (`turn:<index>`), so inserting an early turn
+ * shifts later identities — unlike the structural, insertion-stable markdown
+ * keys. Acceptable for largely append-only transcripts; a stabler scheme
+ * (upstream turn IDs, or speaker + content fingerprint) is a tracked follow-up
+ * to land with stale-chunk deletion.
  */
 export class InterviewTurnChunker implements Chunker {
   readonly name = 'interview-turn';

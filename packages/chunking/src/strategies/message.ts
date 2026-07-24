@@ -29,6 +29,11 @@ function splitMessages(text: string): string[] {
  * Ticket / issue / thread chunker: one chunk per message, extracting an author
  * from a leading `From:`/`Author:` header when present. Oversized messages are
  * windowed under the message's source key.
+ *
+ * NOTE: `sourceKey` is positional (`msg:<index>`), so inserting an early message
+ * shifts later identities. Acceptable for append-only threads; preferring
+ * upstream message IDs (or author + content fingerprint) is a tracked follow-up
+ * to land with stale-chunk deletion.
  */
 export class MessageChunker implements Chunker {
   readonly name = 'message';

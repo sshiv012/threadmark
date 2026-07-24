@@ -31,4 +31,11 @@ describe('AnalyticsChunker', () => {
     const out = await chunker.chunk(doc('no commas here just prose'), opts);
     expect(out[0]!.sourceKey.startsWith('win:')).toBe(true);
   });
+
+  it('windows a row that exceeds maxTokens, keyed under the row', async () => {
+    const big = `id,note\nr1,${Array.from({ length: 50 }, (_, i) => `w${i}`).join(' ')}`;
+    const out = await chunker.chunk(doc(big), { maxTokens: 10, overlapTokens: 2 });
+    expect(out.length).toBeGreaterThan(1);
+    expect(out.every((c) => c.sourceKey.startsWith('row:r1'))).toBe(true);
+  });
 });
