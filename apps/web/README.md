@@ -21,8 +21,8 @@ pnpm seed                             # terminal 2 — ingest all 22 dogfood doc
 pnpm --filter @threadmark/web dev     # terminal 3 — dashboard at http://localhost:3000
 ```
 
-Then browse http://localhost:3000 and try queries like *"external dashboard
-sharing access controls"* or *"SSO for external viewers"*. The Temporal UI
+Then browse http://localhost:3000 and try queries like _"external dashboard
+sharing access controls"_ or _"SSO for external viewers"_. The Temporal UI
 (http://localhost:8233) shows the durable ingestion runs.
 
 `pnpm search "<query>"` is a CLI equivalent of the search page (prints cold vs
