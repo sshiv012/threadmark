@@ -214,3 +214,16 @@ export async function listAgentSteps(db: Database, runId: string): Promise<Agent
 export async function getChunksByDocument(db: Database, documentId: string): Promise<Chunk[]> {
   return db.select().from(chunks).where(eq(chunks.documentId, documentId)).orderBy(chunks.ord);
 }
+
+/**
+ * Set a chunk's embedding directly (the embed phase). Distinct from
+ * `upsertChunks`, whose content-preserving CASE would otherwise keep the old
+ * (null) vector for an unchanged chunk — here we explicitly write the vector.
+ */
+export async function setChunkEmbedding(
+  db: Database,
+  chunkId: string,
+  embedding: number[],
+): Promise<void> {
+  await db.update(chunks).set({ embedding }).where(eq(chunks.id, chunkId));
+}
