@@ -4,7 +4,7 @@
  *
  * Kept minimal for PR3 — just what ingestion (PR5) and its tests need.
  */
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Database } from './client.js';
 import {
   agentRuns,
@@ -44,6 +44,17 @@ export async function getWorkspace(db: Database, id: string): Promise<Workspace 
   return row;
 }
 
+/**
+ * Reuse a workspace by name for dev tooling (CLI, seed). NOTE: workspace names
+ * are not unique, so this is only idempotent under sequential use — concurrent
+ * callers could race and create duplicates. Dev-only; do not rely on it as a
+ * strong uniqueness guarantee.
+ */
+export async function findOrCreateWorkspaceByName(db: Database, name: string): Promise<Workspace> {
+  const [existing] = await db.select().from(workspaces).where(eq(workspaces.name, name)).limit(1);
+  return existing ?? createWorkspace(db, { name });
+}
+
 export async function createUser(db: Database, input: NewUser): Promise<User> {
   const [row] = await db.insert(users).values(input).returning();
   return row!;
@@ -70,6 +81,26 @@ export async function createEvidenceDocument(
 ): Promise<EvidenceDocument> {
   const [row] = await db.insert(evidenceDocuments).values(input).returning();
   return row!;
+}
+
+/**
+ * Look up a document by its content within a workspace. Lets ingestion be
+ * idempotent per source identity: retrying the same file reuses the existing
+ * (queued/failed) document instead of creating a duplicate.
+ */
+export async function findEvidenceDocumentByChecksum(
+  db: Database,
+  workspaceId: string,
+  checksum: string,
+): Promise<EvidenceDocument | undefined> {
+  const [row] = await db
+    .select()
+    .from(evidenceDocuments)
+    .where(
+      and(eq(evidenceDocuments.workspaceId, workspaceId), eq(evidenceDocuments.checksum, checksum)),
+    )
+    .limit(1);
+  return row;
 }
 
 export async function getEvidenceDocument(

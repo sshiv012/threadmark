@@ -7,6 +7,18 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "worker": "node --env-file=../../.env dist/worker.js",
+    "ingest": "node --env-file=../../.env dist/cli/ingest.js"
+  },
+  "dependencies": {
+    "@temporalio/activity": "^1.21.0",
+    "@temporalio/client": "^1.21.0",
+    "@temporalio/worker": "^1.21.0",
+    "@temporalio/workflow": "^1.21.0",
+    "@threadmark/blob": "workspace:^",
+    "@threadmark/chunking": "workspace:^",
+    "@threadmark/db": "workspace:^",
+    "@threadmark/model-router": "workspace:^"
   }
 }
