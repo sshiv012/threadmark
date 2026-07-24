@@ -7,15 +7,23 @@
 import { eq, sql } from 'drizzle-orm';
 import type { Database } from './client.js';
 import {
+  agentRuns,
+  agentSteps,
   chunks,
   evidenceDocuments,
   memberships,
   users,
   workspaces,
+  type AgentRun,
+  type AgentRunStatus,
+  type AgentStep,
+  type AgentStepStatus,
   type Chunk,
   type DocumentStatus,
   type EvidenceDocument,
   type Membership,
+  type NewAgentRun,
+  type NewAgentStep,
   type NewChunk,
   type NewEvidenceDocument,
   type NewMembership,
@@ -93,9 +101,17 @@ export async function updateDocumentStatus(
 
 // ── Chunks ───────────────────────────────────────────────────────────────────
 /**
- * Idempotent chunk write. Re-running ingestion for the same document upserts
- * on (document_id, ord) instead of creating duplicates — the schema-level
- * guarantee behind the "retryable operations are idempotent" invariant.
+ * Idempotent chunk write. Re-running ingestion upserts on the stable
+ * (document_id, source_key) — not the shifting ordinal — so edits elsewhere in
+ * a document don't duplicate or churn unrelated chunks. Backs the "retryable
+ * operations are idempotent" invariant.
+ *
+ * Embedding is preserved when the content is unchanged: if the incoming
+ * content_hash matches the stored one, the existing vector is kept (so a
+ * re-ingest that writes chunk text without recomputing embeddings does NOT
+ * clobber a valid vector — the "unchanged hash ⇒ skip re-embed" guarantee).
+ * When the content changed, the incoming embedding wins (a new vector, or NULL
+ * to clear the now-stale one for a later embed pass).
  */
 export async function upsertChunks(db: Database, rows: NewChunk[]): Promise<Chunk[]> {
   if (rows.length === 0) return [];
@@ -103,14 +119,65 @@ export async function upsertChunks(db: Database, rows: NewChunk[]): Promise<Chun
     .insert(chunks)
     .values(rows)
     .onConflictDoUpdate({
-      target: [chunks.documentId, chunks.ord],
+      target: [chunks.documentId, chunks.sourceKey],
       set: {
+        ord: sql`excluded.ord`,
         text: sql`excluded.text`,
+        contentHash: sql`excluded.content_hash`,
         tokenCount: sql`excluded.token_count`,
-        embedding: sql`excluded.embedding`,
+        embedding: sql`CASE WHEN ${chunks.contentHash} = excluded.content_hash THEN ${chunks.embedding} ELSE excluded.embedding END`,
       },
     })
     .returning();
+}
+
+// ── Agent runs / steps (observability) ───────────────────────────────────────
+export async function createAgentRun(db: Database, input: NewAgentRun): Promise<AgentRun> {
+  const [row] = await db.insert(agentRuns).values(input).returning();
+  return row!;
+}
+
+export async function getAgentRun(db: Database, id: string): Promise<AgentRun | undefined> {
+  const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, id)).limit(1);
+  return row;
+}
+
+export async function updateAgentRunStatus(
+  db: Database,
+  id: string,
+  status: AgentRunStatus,
+  endedAt?: Date,
+): Promise<AgentRun | undefined> {
+  const patch: { status: AgentRunStatus; endedAt?: Date } = { status };
+  if (endedAt !== undefined) patch.endedAt = endedAt;
+  const [row] = await db.update(agentRuns).set(patch).where(eq(agentRuns.id, id)).returning();
+  return row;
+}
+
+/** Append a step (each retry attempt is its own row, so retries stay visible). */
+export async function appendAgentStep(db: Database, input: NewAgentStep): Promise<AgentStep> {
+  const [row] = await db.insert(agentSteps).values(input).returning();
+  return row!;
+}
+
+export interface AgentStepPatch {
+  status?: AgentStepStatus;
+  outputSummary?: string | null;
+  error?: string | null;
+  endedAt?: Date;
+}
+
+export async function updateAgentStep(
+  db: Database,
+  id: string,
+  patch: AgentStepPatch,
+): Promise<AgentStep | undefined> {
+  const [row] = await db.update(agentSteps).set(patch).where(eq(agentSteps.id, id)).returning();
+  return row;
+}
+
+export async function listAgentSteps(db: Database, runId: string): Promise<AgentStep[]> {
+  return db.select().from(agentSteps).where(eq(agentSteps.runId, runId)).orderBy(agentSteps.ord);
 }
 
 export async function getChunksByDocument(db: Database, documentId: string): Promise<Chunk[]> {
