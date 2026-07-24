@@ -4,7 +4,7 @@
  *
  * Kept minimal for PR3 — just what ingestion (PR5) and its tests need.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, notInArray, sql } from 'drizzle-orm';
 import type { Database } from './client.js';
 import {
   agentRuns,
@@ -216,14 +216,31 @@ export async function getChunksByDocument(db: Database, documentId: string): Pro
 }
 
 /**
- * Set a chunk's embedding directly (the embed phase). Distinct from
- * `upsertChunks`, whose content-preserving CASE would otherwise keep the old
- * (null) vector for an unchanged chunk — here we explicitly write the vector.
+ * Set a chunk's embedding + the model that produced it (embed phase). Distinct
+ * from `upsertChunks`, whose content-preserving CASE would keep the old vector.
  */
 export async function setChunkEmbedding(
   db: Database,
   chunkId: string,
   embedding: number[],
+  model: string,
 ): Promise<void> {
-  await db.update(chunks).set({ embedding }).where(eq(chunks.id, chunkId));
+  await db.update(chunks).set({ embedding, embeddingModel: model }).where(eq(chunks.id, chunkId));
+}
+
+/**
+ * Delete chunks of a document whose source_key is NOT in the current candidate
+ * set — i.e. sections removed since the last ingest. Keeps Postgres reconciled
+ * with the source on re-ingestion.
+ */
+export async function deleteChunksNotIn(
+  db: Database,
+  documentId: string,
+  keepSourceKeys: string[],
+): Promise<void> {
+  const condition =
+    keepSourceKeys.length === 0
+      ? eq(chunks.documentId, documentId)
+      : and(eq(chunks.documentId, documentId), notInArray(chunks.sourceKey, keepSourceKeys));
+  await db.delete(chunks).where(condition);
 }

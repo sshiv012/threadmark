@@ -35,6 +35,7 @@ export class StubGenerationProvider implements GenerationProvider {
 
 export class StubEmbeddingProvider implements EmbeddingProvider {
   readonly name = 'stub';
+  readonly model = 'stub';
 
   constructor(readonly dimensions: number) {}
 

@@ -48,7 +48,7 @@ export interface TransformersRerankOptions {
 export class TransformersEmbeddingProvider implements EmbeddingProvider {
   readonly name = 'transformers';
   readonly dimensions: number;
-  private readonly model: string;
+  readonly model: string;
   private readonly load: () => Promise<FeatureExtractor>;
   private extractorPromise?: Promise<FeatureExtractor>;
 

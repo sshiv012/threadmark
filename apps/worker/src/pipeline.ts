@@ -9,6 +9,7 @@
 import type { BlobStore } from '@threadmark/blob';
 import { DEFAULT_CHUNKING_OPTIONS, type ChunkerRegistry } from '@threadmark/chunking';
 import {
+  deleteChunksNotIn,
   getChunksByDocument,
   getEvidenceDocument,
   setChunkEmbedding,
@@ -45,8 +46,10 @@ export async function extractAndChunk(deps: IngestionDeps, documentId: string): 
   const document = await getEvidenceDocument(deps.db, documentId);
   if (!document) throw new Error(`document not found: ${documentId}`);
 
-  const { bytes } = await deps.blob.get(blobKeyFromUri(document.blobUri));
-  const text = extractText(bytes, inferContentType(document.title));
+  const blob = await deps.blob.get(blobKeyFromUri(document.blobUri));
+  // Prefer the blob's stored content type; titles may be renamed/extensionless.
+  const contentType = blob.contentType ?? inferContentType(document.title);
+  const text = extractText(blob.bytes, contentType);
 
   const chunker = deps.chunkers.get(document.sourceType);
   const candidates = await chunker.chunk(
@@ -65,26 +68,50 @@ export async function extractAndChunk(deps: IngestionDeps, documentId: string): 
       tokenCount: c.tokenCount,
     })),
   );
+  // Reconcile: drop chunks whose source section was removed since last ingest.
+  await deleteChunksNotIn(
+    deps.db,
+    documentId,
+    candidates.map((c) => c.sourceKey),
+  );
   return candidates.length;
 }
 
-/** Embed only chunks missing a vector (new/changed content); returns how many. */
+/** Max chunks per embedding model call — bounds memory + activity duration. */
+const EMBED_BATCH_SIZE = 64;
+
+/**
+ * Embed chunks that are missing a vector OR whose stored embedding was produced
+ * by a different model than the currently-configured one (so a model upgrade
+ * re-embeds rather than mixing vector generations). Processed in bounded batches.
+ */
 export async function embedChunks(deps: IngestionDeps, documentId: string): Promise<number> {
+  const model = deps.router.providers.embedding.model;
   const chunks = await getChunksByDocument(deps.db, documentId);
-  const pending = chunks.filter((chunk) => chunk.embedding === null);
+  const pending = chunks.filter(
+    (chunk) => chunk.embedding === null || chunk.embeddingModel !== model,
+  );
   if (pending.length === 0) return 0;
 
-  const { vectors } = await deps.router.embed({ input: pending.map((c) => c.text) });
-  for (let i = 0; i < pending.length; i++) {
-    await setChunkEmbedding(deps.db, pending[i]!.id, vectors[i]!);
+  for (let start = 0; start < pending.length; start += EMBED_BATCH_SIZE) {
+    const batch = pending.slice(start, start + EMBED_BATCH_SIZE);
+    const { vectors, model: usedModel } = await deps.router.embed({
+      input: batch.map((c) => c.text),
+    });
+    for (let i = 0; i < batch.length; i++) {
+      await setChunkEmbedding(deps.db, batch[i]!.id, vectors[i]!, usedModel);
+    }
   }
   return pending.length;
 }
 
-/** Index chunk text into OpenSearch for BM25 retrieval; returns how many. */
+/** Replace this document's OpenSearch entries with its current chunks. */
 export async function indexChunks(deps: IngestionDeps, documentId: string): Promise<number> {
   const chunks = await getChunksByDocument(deps.db, documentId);
   await deps.search.ensureIndex(CHUNK_INDEX);
+  // Delete-then-index so chunk ids removed/renamed since last ingest don't
+  // linger as searchable entries.
+  await deps.search.deleteByDocument(CHUNK_INDEX, documentId);
   await deps.search.indexChunks(
     CHUNK_INDEX,
     chunks.map((chunk) => ({ id: chunk.id, documentId, text: chunk.text })),
