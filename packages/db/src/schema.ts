@@ -129,6 +129,9 @@ export const chunks = pgTable(
     tokenCount: integer('token_count').notNull(),
     // Nullable: chunk text may be persisted before embeddings are computed.
     embedding: vector('embedding', { dimensions: EMBEDDING_DIMENSIONS }),
+    // Provenance: which embedding model produced `embedding`. A mismatch with
+    // the configured model marks the chunk for re-embedding.
+    embeddingModel: text('embedding_model'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   // Idempotency key: stable source identity, not the shifting ordinal.

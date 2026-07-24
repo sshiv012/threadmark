@@ -37,6 +37,8 @@ export interface EmbeddingResult {
 
 export interface EmbeddingProvider {
   readonly name: string;
+  /** Concrete model identifier (for embedding provenance / detecting upgrades). */
+  readonly model: string;
   readonly dimensions: number;
   embed(request: EmbeddingRequest): Promise<EmbeddingResult>;
 }

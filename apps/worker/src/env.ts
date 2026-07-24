@@ -7,6 +7,7 @@ export const env = {
     process.env.DATABASE_URL ??
     'postgres://threadmark:threadmark_local_dev@localhost:5432/threadmark',
   temporalAddress: process.env.TEMPORAL_ADDRESS ?? 'localhost:7233',
+  opensearchNode: process.env.OPENSEARCH_NODE ?? 'http://localhost:9200',
   minio: {
     endpoint: process.env.MINIO_ENDPOINT ?? 'http://localhost:9000',
     accessKeyId: process.env.MINIO_ROOT_USER ?? 'threadmark',

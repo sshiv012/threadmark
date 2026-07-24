@@ -19,6 +19,12 @@
     "@threadmark/blob": "workspace:^",
     "@threadmark/chunking": "workspace:^",
     "@threadmark/db": "workspace:^",
-    "@threadmark/model-router": "workspace:^"
+    "@threadmark/model-router": "workspace:^",
+    "@threadmark/search": "workspace:^"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4",
+    "@electric-sql/pglite-pgvector": "^0.0.5",
+    "drizzle-orm": "^0.45.2"
   }
 }
