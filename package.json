@@ -18,7 +18,9 @@
     "infra:up": "docker compose --env-file .env -f infra/docker/docker-compose.yml up -d",
     "infra:down": "docker compose --env-file .env -f infra/docker/docker-compose.yml down",
     "infra:logs": "docker compose --env-file .env -f infra/docker/docker-compose.yml logs -f",
-    "infra:smoke": "bash infra/docker/smoke.sh"
+    "infra:smoke": "bash infra/docker/smoke.sh",
+    "worker": "pnpm --filter @threadmark/worker build && node --env-file=.env apps/worker/dist/worker.js",
+    "ingest": "pnpm --filter @threadmark/worker build && node --env-file=.env apps/worker/dist/cli/ingest.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

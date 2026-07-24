@@ -44,6 +44,12 @@ export async function getWorkspace(db: Database, id: string): Promise<Workspace 
   return row;
 }
 
+/** Idempotent by name — used by dev tooling (CLI, seed) to reuse one workspace. */
+export async function findOrCreateWorkspaceByName(db: Database, name: string): Promise<Workspace> {
+  const [existing] = await db.select().from(workspaces).where(eq(workspaces.name, name)).limit(1);
+  return existing ?? createWorkspace(db, { name });
+}
+
 export async function createUser(db: Database, input: NewUser): Promise<User> {
   const [row] = await db.insert(users).values(input).returning();
   return row!;
