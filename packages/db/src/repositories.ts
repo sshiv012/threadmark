@@ -4,7 +4,7 @@
  *
  * Kept minimal for PR3 — just what ingestion (PR5) and its tests need.
  */
-import { and, eq, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import type { Database } from './client.js';
 import {
   agentRuns,
@@ -21,6 +21,7 @@ import {
   type Chunk,
   type DocumentStatus,
   type EvidenceDocument,
+  type EvidenceSourceType,
   type Membership,
   type NewAgentRun,
   type NewAgentStep,
@@ -243,4 +244,58 @@ export async function deleteChunksNotIn(
       ? eq(chunks.documentId, documentId)
       : and(eq(chunks.documentId, documentId), notInArray(chunks.sourceKey, keepSourceKeys));
   await db.delete(chunks).where(condition);
+}
+
+export interface VectorHit {
+  chunkId: string;
+  documentId: string;
+  distance: number;
+}
+
+/**
+ * Exact pgvector kNN over a workspace's embedded chunks (cosine distance).
+ * Exact scan — no ANN index yet; establish a recall baseline first.
+ */
+export async function searchChunksByVector(
+  db: Database,
+  workspaceId: string,
+  embedding: number[],
+  limit: number,
+): Promise<VectorHit[]> {
+  const literal = `[${embedding.join(',')}]`;
+  const distance = sql<number>`${chunks.embedding} <=> ${literal}::vector`;
+  return db
+    .select({ chunkId: chunks.id, documentId: chunks.documentId, distance })
+    .from(chunks)
+    .innerJoin(evidenceDocuments, eq(chunks.documentId, evidenceDocuments.id))
+    .where(and(eq(evidenceDocuments.workspaceId, workspaceId), isNotNull(chunks.embedding)))
+    .orderBy(distance)
+    .limit(limit);
+}
+
+export interface RetrievalChunk {
+  chunkId: string;
+  documentId: string;
+  documentTitle: string;
+  sourceType: EvidenceSourceType;
+  text: string;
+}
+
+/** Load chunk text + owning-document metadata for a set of chunk ids. */
+export async function getRetrievalChunksByIds(
+  db: Database,
+  ids: string[],
+): Promise<RetrievalChunk[]> {
+  if (ids.length === 0) return [];
+  return db
+    .select({
+      chunkId: chunks.id,
+      documentId: chunks.documentId,
+      documentTitle: evidenceDocuments.title,
+      sourceType: evidenceDocuments.sourceType,
+      text: chunks.text,
+    })
+    .from(chunks)
+    .innerJoin(evidenceDocuments, eq(chunks.documentId, evidenceDocuments.id))
+    .where(inArray(chunks.id, ids));
 }
