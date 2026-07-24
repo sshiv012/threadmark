@@ -9,7 +9,12 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { S3BlobStore } from '@threadmark/blob';
-import { createDb, createEvidenceDocument, findOrCreateWorkspaceByName } from '@threadmark/db';
+import {
+  createDb,
+  createEvidenceDocument,
+  findEvidenceDocumentByChecksum,
+  findOrCreateWorkspaceByName,
+} from '@threadmark/db';
 import { runIngestionWorkflow } from '../client.js';
 import { env } from '../env.js';
 import { inferContentType, inferSourceType } from '../helpers.js';
@@ -42,14 +47,21 @@ async function main(): Promise<void> {
     const key = `${workspace.id}/${checksum}-${fileName}`;
     const { uri } = await blob.put(key, bytes, inferContentType(filePath));
 
-    const document = await createEvidenceDocument(db, {
-      workspaceId: workspace.id,
-      sourceType: inferSourceType(filePath),
-      title: fileName,
-      blobUri: uri,
-      checksum,
-    });
-    console.log(`created document ${document.id} (${document.sourceType}) → ${uri}`);
+    // Idempotent by (workspace, checksum): re-ingesting the same file reuses the
+    // existing document (e.g. retry after a failure) rather than duplicating it.
+    const existing = await findEvidenceDocumentByChecksum(db, workspace.id, checksum);
+    const document =
+      existing ??
+      (await createEvidenceDocument(db, {
+        workspaceId: workspace.id,
+        sourceType: inferSourceType(filePath),
+        title: fileName,
+        blobUri: uri,
+        checksum,
+      }));
+    console.log(
+      `${existing ? 'reusing' : 'created'} document ${document.id} (${document.sourceType}, ${document.status}) → ${uri}`,
+    );
 
     const workflowId = await runIngestionWorkflow({ documentId: document.id });
     console.log(`✓ ingestion complete — workflow ${workflowId}`);

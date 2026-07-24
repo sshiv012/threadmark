@@ -13,5 +13,8 @@ const { db } = createDb(env.databaseUrl);
 
 /** Mark a document ready (idempotent — a plain status write). */
 export async function markDocumentReady(documentId: string): Promise<void> {
-  await updateDocumentStatus(db, documentId, 'ready');
+  const updated = await updateDocumentStatus(db, documentId, 'ready');
+  // A stale/incorrect id matches no row; fail so the workflow doesn't succeed
+  // without an actual transition.
+  if (!updated) throw new Error(`markDocumentReady: document not found: ${documentId}`);
 }

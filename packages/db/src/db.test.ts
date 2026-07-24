@@ -12,6 +12,7 @@ import {
   createEvidenceDocument,
   createUser,
   createWorkspace,
+  findEvidenceDocumentByChecksum,
   getAgentRun,
   getChunksByDocument,
   getEvidenceDocument,
@@ -96,6 +97,28 @@ describe('evidence documents', () => {
       status: 'failed',
       statusReason: 'embedding provider timeout',
     });
+  });
+
+  it('returns undefined when updating the status of a non-existent document', async () => {
+    // The ingestion activity relies on this to fail fast on a stale/bad id.
+    expect(
+      await updateDocumentStatus(db, '00000000-0000-0000-0000-000000000000', 'ready'),
+    ).toBeUndefined();
+  });
+
+  it('finds a document by (workspace, checksum) for idempotent re-ingest', async () => {
+    const { workspace } = await seedWorkspaceAndUser();
+    const doc = await createEvidenceDocument(db, {
+      workspaceId: workspace.id,
+      sourceType: 'product_doc',
+      title: 'Doc',
+      blobUri: 's3://evidence/doc.md',
+      checksum: 'sha-xyz',
+    });
+    expect(await findEvidenceDocumentByChecksum(db, workspace.id, 'sha-xyz')).toMatchObject({
+      id: doc.id,
+    });
+    expect(await findEvidenceDocumentByChecksum(db, workspace.id, 'missing')).toBeUndefined();
   });
 });
 
