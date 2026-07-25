@@ -9,6 +9,7 @@ import { createDb, findOrCreateWorkspaceByName } from '@threadmark/db';
 import { createModelRouter, loadModelRouterConfig } from '@threadmark/model-router';
 import { RedisCache, createRetriever, type HybridSearchOptions } from '@threadmark/retrieval';
 import { OpenSearchIndex } from '@threadmark/search';
+import { initTelemetry } from '@threadmark/telemetry';
 import { Redis } from 'ioredis';
 import { env } from '../env.js';
 
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
   const candidateK = numericFlag(args, 'candidates');
   const topK = numericFlag(args, 'topk');
 
+  const shutdownTelemetry = initTelemetry('threadmark-retrieve-cli');
   const { db, close } = createDb(env.databaseUrl);
   const redis = new Redis(env.redisUrl);
   const retriever = createRetriever({
@@ -67,6 +69,7 @@ async function main(): Promise<void> {
   } finally {
     await close();
     redis.disconnect();
+    await shutdownTelemetry();
   }
 }
 

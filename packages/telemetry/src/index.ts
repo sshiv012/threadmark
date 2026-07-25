@@ -16,6 +16,9 @@ export const PACKAGE_NAME = '@threadmark/telemetry';
 
 const TRACER_NAME = '@threadmark/telemetry';
 
+/** Upper bound on how long shutdown() may block a caller's process exit. */
+const SHUTDOWN_TIMEOUT_MS = 5000;
+
 /**
  * Bootstrap trace export for this process. Reads OTEL_EXPORTER_OTLP_ENDPOINT;
  * when unset (the default until an operator opts in), registers a provider
@@ -51,7 +54,15 @@ export function initTelemetry(serviceName: string): () => Promise<void> {
 
   return async () => {
     try {
-      await provider.shutdown();
+      await Promise.race([
+        provider.shutdown(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`telemetry shutdown exceeded ${SHUTDOWN_TIMEOUT_MS}ms`)),
+            SHUTDOWN_TIMEOUT_MS,
+          ),
+        ),
+      ]);
     } catch (error) {
       console.warn('[telemetry] provider shutdown failed:', error);
     }

@@ -308,9 +308,18 @@ describe('initTelemetry', () => {
       try {
         process.env[ENDPOINT_ENV] = `http://127.0.0.1:${port}/v1/traces`;
         const shutdown = initTelemetry('test-service');
+        // Without an actual queued span, BatchSpanProcessor has nothing to
+        // flush and shutdown() could resolve trivially without ever talking
+        // to the hanging server — that would pass without exercising the
+        // behavior this test claims to bound. Emit one first.
+        await withSpan('unit.before-hang', {}, async () => undefined);
+
+        // The outer race timeout (8s) is intentionally ABOVE the package's
+        // own SHUTDOWN_TIMEOUT_MS (5s) — this proves initTelemetry's shutdown
+        // bounds itself, rather than merely being rescued by this test.
         await Promise.race([
           shutdown(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('shutdown hung')), 5000)),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('shutdown hung')), 8000)),
         ]);
       } finally {
         server.close();
