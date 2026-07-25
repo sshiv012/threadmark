@@ -62,6 +62,9 @@ importers:
       '@threadmark/db':
         specifier: workspace:^
         version: link:../../packages/db
+      '@threadmark/evals':
+        specifier: workspace:^
+        version: link:../../packages/evals
       '@threadmark/model-router':
         specifier: workspace:^
         version: link:../../packages/model-router
