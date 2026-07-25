@@ -22,7 +22,8 @@
     "worker": "pnpm --filter @threadmark/worker... build && node --env-file=.env apps/worker/dist/worker.js",
     "ingest": "pnpm --filter @threadmark/worker... build && node --env-file=.env apps/worker/dist/cli/ingest.js",
     "seed": "pnpm --filter @threadmark/worker... build && node --env-file=.env apps/worker/dist/cli/seed.js",
-    "search": "pnpm --filter @threadmark/worker... build && node --env-file=.env apps/worker/dist/cli/search.js"
+    "retrieve": "pnpm --filter @threadmark/worker... build && node --env-file=.env apps/worker/dist/cli/retrieve.js",
+    "test:dogfood": "pnpm --filter @threadmark/worker test:dogfood"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
