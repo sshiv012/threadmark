@@ -7,6 +7,7 @@ import {
 } from '@threadmark/db';
 import type { ModelRouter } from '@threadmark/model-router';
 import type { SearchIndex } from '@threadmark/search';
+import { withSpan } from '@threadmark/telemetry';
 import { NoopCache } from './cache.js';
 import { reciprocalRankFusion } from './rrf.js';
 import type {
@@ -104,86 +105,107 @@ export function createRetriever(deps: RetrieverDeps): Retriever {
   const chunkIndex = deps.chunkIndex ?? CHUNK_INDEX;
 
   return {
-    async search(query, options) {
-      const { topK, candidateK } = validateSearchInput(query, options);
-      const start = Date.now();
-      const corpusRevision = await getWorkspaceRetrievalRevision(deps.db, options.workspaceId);
-      const key = cacheKey(
-        query,
-        options.workspaceId,
-        topK,
-        candidateK,
-        deps.router.providers.embedding.model,
-        deps.router.providers.rerank.model,
-        corpusRevision,
+    search(query, options) {
+      return withSpan(
+        'retrieval.search',
+        { 'retrieval.workspace_id': options.workspaceId ?? '' },
+        async (span) => {
+          const { topK, candidateK } = validateSearchInput(query, options);
+          span?.setAttribute('retrieval.top_k', topK);
+          span?.setAttribute('retrieval.candidate_k', candidateK);
+
+          const start = Date.now();
+          const corpusRevision = await getWorkspaceRetrievalRevision(deps.db, options.workspaceId);
+          const key = cacheKey(
+            query,
+            options.workspaceId,
+            topK,
+            candidateK,
+            deps.router.providers.embedding.model,
+            deps.router.providers.rerank.model,
+            corpusRevision,
+          );
+
+          const hit = await cache.get(key);
+          if (hit) {
+            const latencyMs = Date.now() - start;
+            span?.setAttribute('retrieval.cached', true);
+            span?.setAttribute('retrieval.result_count', hit.length);
+            span?.setAttribute('retrieval.latency_ms', latencyMs);
+            return { query, results: hit, cached: true, latencyMs };
+          }
+
+          // Hybrid candidate generation: dense (pgvector) + lexical (BM25). Both
+          // MUST be scoped to the caller's workspace — this is the boundary that
+          // prevents one workspace's evidence leaking into another's results.
+          const { vectors } = await deps.router.embed({ input: [query] });
+          const [vectorHits, lexicalHits] = await Promise.all([
+            searchChunksByVector(deps.db, options.workspaceId, vectors[0]!, candidateK),
+            deps.search.searchBm25(chunkIndex, query, candidateK, options.workspaceId),
+          ]);
+
+          const vectorIds = vectorHits.map((h) => h.chunkId);
+          const lexicalIds = lexicalHits.map((h) => h.id);
+          const fused = reciprocalRankFusion([vectorIds, lexicalIds]);
+          const candidateIds = fused.slice(0, candidateK).map((f) => f.id);
+          if (candidateIds.length === 0) {
+            // Cache the negative result too — a "no matches" answer is just as
+            // valid to reuse as a positive one, and skipping it meant every repeat
+            // of a no-hit query recomputed from scratch.
+            await cache.set(key, []);
+            const latencyMs = Date.now() - start;
+            span?.setAttribute('retrieval.cached', false);
+            span?.setAttribute('retrieval.result_count', 0);
+            span?.setAttribute('retrieval.latency_ms', latencyMs);
+            return { query, results: [], cached: false, latencyMs };
+          }
+
+          // Defense in depth: even if a candidate id leaked from another workspace,
+          // hydration re-checks workspace + ready-status and drops it silently.
+          const rows = await getRetrievalChunksByIds(deps.db, candidateIds, options.workspaceId);
+          const byId = new Map(rows.map((r) => [r.chunkId, r]));
+          const vectorRank = new Map(vectorIds.map((id, i) => [id, i + 1]));
+          const lexicalRank = new Map(lexicalIds.map((id, i) => [id, i + 1]));
+
+          // Rerank the fused candidates with the cross-encoder; it decides final order.
+          const reranked = await deps.router.rerank({
+            query,
+            documents: candidateIds
+              .filter((id) => byId.has(id))
+              .map((id) => ({ id, text: byId.get(id)!.text })),
+            topK,
+          });
+
+          // Defensive against a misbehaving RerankProvider: an id it returns that
+          // we never sent (unknown/hallucinated) is dropped rather than crashing;
+          // a repeated id is deduped, keeping only its first (best-ranked) entry.
+          const results: RetrievedChunk[] = [];
+          const seenResultIds = new Set<string>();
+          for (const r of reranked.results) {
+            if (seenResultIds.has(r.id)) continue;
+            const row = byId.get(r.id);
+            if (!row) continue;
+            seenResultIds.add(r.id);
+            results.push({
+              chunkId: row.chunkId,
+              documentId: row.documentId,
+              documentTitle: row.documentTitle,
+              sourceType: row.sourceType,
+              text: row.text,
+              rerankScore: r.score,
+              ...(vectorRank.has(r.id) ? { vectorRank: vectorRank.get(r.id)! } : {}),
+              ...(lexicalRank.has(r.id) ? { lexicalRank: lexicalRank.get(r.id)! } : {}),
+            });
+          }
+
+          await cache.set(key, results);
+          const latencyMs = Date.now() - start;
+          span?.setAttribute('retrieval.cached', false);
+          span?.setAttribute('retrieval.result_count', results.length);
+          span?.setAttribute('retrieval.latency_ms', latencyMs);
+          return { query, results, cached: false, latencyMs };
+        },
       );
-
-      const hit = await cache.get(key);
-      if (hit) {
-        return { query, results: hit, cached: true, latencyMs: Date.now() - start };
-      }
-
-      // Hybrid candidate generation: dense (pgvector) + lexical (BM25). Both
-      // MUST be scoped to the caller's workspace — this is the boundary that
-      // prevents one workspace's evidence leaking into another's results.
-      const { vectors } = await deps.router.embed({ input: [query] });
-      const [vectorHits, lexicalHits] = await Promise.all([
-        searchChunksByVector(deps.db, options.workspaceId, vectors[0]!, candidateK),
-        deps.search.searchBm25(chunkIndex, query, candidateK, options.workspaceId),
-      ]);
-
-      const vectorIds = vectorHits.map((h) => h.chunkId);
-      const lexicalIds = lexicalHits.map((h) => h.id);
-      const fused = reciprocalRankFusion([vectorIds, lexicalIds]);
-      const candidateIds = fused.slice(0, candidateK).map((f) => f.id);
-      if (candidateIds.length === 0) {
-        // Cache the negative result too — a "no matches" answer is just as
-        // valid to reuse as a positive one, and skipping it meant every repeat
-        // of a no-hit query recomputed from scratch.
-        await cache.set(key, []);
-        return { query, results: [], cached: false, latencyMs: Date.now() - start };
-      }
-
-      // Defense in depth: even if a candidate id leaked from another workspace,
-      // hydration re-checks workspace + ready-status and drops it silently.
-      const rows = await getRetrievalChunksByIds(deps.db, candidateIds, options.workspaceId);
-      const byId = new Map(rows.map((r) => [r.chunkId, r]));
-      const vectorRank = new Map(vectorIds.map((id, i) => [id, i + 1]));
-      const lexicalRank = new Map(lexicalIds.map((id, i) => [id, i + 1]));
-
-      // Rerank the fused candidates with the cross-encoder; it decides final order.
-      const reranked = await deps.router.rerank({
-        query,
-        documents: candidateIds
-          .filter((id) => byId.has(id))
-          .map((id) => ({ id, text: byId.get(id)!.text })),
-        topK,
-      });
-
-      // Defensive against a misbehaving RerankProvider: an id it returns that
-      // we never sent (unknown/hallucinated) is dropped rather than crashing;
-      // a repeated id is deduped, keeping only its first (best-ranked) entry.
-      const results: RetrievedChunk[] = [];
-      const seenResultIds = new Set<string>();
-      for (const r of reranked.results) {
-        if (seenResultIds.has(r.id)) continue;
-        const row = byId.get(r.id);
-        if (!row) continue;
-        seenResultIds.add(r.id);
-        results.push({
-          chunkId: row.chunkId,
-          documentId: row.documentId,
-          documentTitle: row.documentTitle,
-          sourceType: row.sourceType,
-          text: row.text,
-          rerankScore: r.score,
-          ...(vectorRank.has(r.id) ? { vectorRank: vectorRank.get(r.id)! } : {}),
-          ...(lexicalRank.has(r.id) ? { lexicalRank: lexicalRank.get(r.id)! } : {}),
-        });
-      }
-
-      await cache.set(key, results);
-      return { query, results, cached: false, latencyMs: Date.now() - start };
     },
   };
 }

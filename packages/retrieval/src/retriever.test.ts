@@ -1,6 +1,9 @@
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
+import { trace } from '@opentelemetry/api';
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import {
   createEvidenceDocument,
   createWorkspace,
@@ -16,7 +19,7 @@ import { createModelRouter, type ModelRouter } from '@threadmark/model-router';
 import { InMemorySearchIndex } from '@threadmark/search';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryCache } from './cache.js';
 import { CHUNK_INDEX, createRetriever, type Retriever } from './retriever.js';
 
@@ -434,4 +437,112 @@ describe('hybrid retriever — only ready documents are searchable', () => {
       expect(result.results).toEqual([]);
     },
   );
+});
+
+describe('hybrid retriever — telemetry', () => {
+  let exporter: InMemorySpanExporter;
+
+  beforeEach(() => {
+    exporter = new InMemorySpanExporter();
+    const provider = new NodeTracerProvider({
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    provider.register();
+  });
+
+  afterEach(() => {
+    trace.disable();
+    exporter.reset();
+  });
+
+  it('emits one retrieval.search span per call, covering the full-result path', async () => {
+    const result = await retriever.search('external dashboard sharing', {
+      workspaceId,
+      topK: 2,
+      candidateK: 5,
+    });
+
+    // The retrieval.search span is the parent of the model-router's own
+    // embed/rerank spans (both chokepoints are instrumented) — assert on the
+    // retrieval.search span specifically, not the raw exporter total.
+    const spans = exporter.getFinishedSpans();
+    const searchSpans = spans.filter((s) => s.name === 'retrieval.search');
+    expect(searchSpans).toHaveLength(1);
+    const span = searchSpans[0]!;
+    expect(span.status.code).toBe(1); // SpanStatusCode.OK
+    expect(span.attributes['retrieval.workspace_id']).toBe(workspaceId);
+    expect(span.attributes['retrieval.top_k']).toBe(2);
+    expect(span.attributes['retrieval.candidate_k']).toBe(5);
+    expect(span.attributes['retrieval.cached']).toBe(false);
+    expect(span.attributes['retrieval.result_count']).toBe(result.results.length);
+    expect(span.attributes['retrieval.latency_ms']).toBe(result.latencyMs);
+
+    // Both nested model-router spans fire as children of this call.
+    expect(spans.some((s) => s.name === 'model_router.embed')).toBe(true);
+    expect(spans.some((s) => s.name === 'model_router.rerank')).toBe(true);
+  });
+
+  it('covers the cache-hit early-return path', async () => {
+    await retriever.search('external dashboard sharing', { workspaceId });
+    exporter.reset();
+
+    const cached = await retriever.search('external dashboard sharing', { workspaceId });
+    expect(cached.cached).toBe(true);
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.attributes['retrieval.cached']).toBe(true);
+  });
+
+  it('covers the empty-candidates early-return path', async () => {
+    const { workspaceId: emptyWs } = await seedWorkspace(`telemetry-empty-${Math.random()}`, []);
+    exporter.reset(); // discard any spans emitted by seeding itself, not the call under test
+
+    const result = await retriever.search('anything', { workspaceId: emptyWs });
+    expect(result.results).toEqual([]);
+
+    const searchSpans = exporter.getFinishedSpans().filter((s) => s.name === 'retrieval.search');
+    expect(searchSpans).toHaveLength(1);
+    expect(searchSpans[0]!.status.code).toBe(1); // SpanStatusCode.OK
+    expect(searchSpans[0]!.attributes['retrieval.result_count']).toBe(0);
+  });
+
+  it('marks the span as an error and rethrows unchanged when input validation fails', async () => {
+    await expect(retriever.search('', { workspaceId })).rejects.toThrow();
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.status.code).toBe(2); // SpanStatusCode.ERROR
+  });
+
+  it('never puts the raw query text on the span', async () => {
+    const marker = 'SECRET_MARKER_XYZ';
+    await retriever.search(marker, { workspaceId });
+
+    for (const span of exporter.getFinishedSpans()) {
+      for (const value of Object.values(span.attributes)) {
+        expect(String(value)).not.toContain(marker);
+      }
+    }
+  });
+
+  it('never cross-attributes concurrent searches for different workspaces', async () => {
+    const wsA = await seedWorkspace(`telemetry-iso-a-${Math.random()}`, CHUNKS);
+    const wsB = await seedWorkspace(`telemetry-iso-b-${Math.random()}`, CHUNKS);
+    exporter.reset(); // discard spans emitted by seeding itself, not the calls under test
+
+    await Promise.all([
+      retriever.search('external dashboard sharing', { workspaceId: wsA.workspaceId }),
+      retriever.search('external dashboard sharing', { workspaceId: wsB.workspaceId }),
+    ]);
+
+    const spans = exporter.getFinishedSpans().filter((s) => s.name === 'retrieval.search');
+    expect(spans).toHaveLength(2);
+    expect(spans.some((s) => s.attributes['retrieval.workspace_id'] === wsA.workspaceId)).toBe(
+      true,
+    );
+    expect(spans.some((s) => s.attributes['retrieval.workspace_id'] === wsB.workspaceId)).toBe(
+      true,
+    );
+  });
 });
