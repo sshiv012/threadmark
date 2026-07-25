@@ -376,13 +376,38 @@ describe.skipIf(!runDogfood)('dogfood integration (real services, real models)',
   describe('4. edit invalidates cache and search', () => {
     const editedDocId = 'ticket-1042-link-expired-too-soon';
     const probeQuery = 'link expired too soon renewal request';
+    const removedPhrase = 'expired too soon';
+    const addedPhrase = 'stopped working unexpectedly';
+    // searchBm25 issues an OR-of-terms match, and this document's other
+    // (unedited) chunks legitimately contain "expired" and "too" elsewhere
+    // (e.g. "access expired", "way too short") — asserting on the full
+    // multi-word phrase would spuriously match those chunks. "soon"/
+    // "unexpectedly" each occur exactly once in this document (title only),
+    // so they unambiguously probe whether the title chunk itself was
+    // re-indexed.
+    const uniqueRemovedTerm = 'soon';
+    const uniqueAddedTerm = 'unexpectedly';
 
-    it('modifying the document changes what is returned, not a stale cached answer', async () => {
+    /** Chunk ids currently persisted for a document — used to attribute an
+     * OpenSearch hit back to a specific document, since SearchHit itself only
+     * carries {id, score}. */
+    async function chunkIdsFor(documentId: string): Promise<Set<string>> {
+      const chunks = await getChunksByDocument(db, documentId);
+      return new Set(chunks.map((c) => c.id));
+    }
+
+    it('removes the old phrase from OpenSearch and indexes the new one — not just a cache change', async () => {
       const documentId = docIdToDocumentId.get(editedDocId)!;
       const blobKey = docIdToBlobKey.get(editedDocId)!;
 
       const before = await retriever.search(probeQuery, { workspaceId });
       expect(before.results.some((r) => r.documentId === documentId)).toBe(true);
+
+      // Sanity: the phrase we're about to remove is genuinely indexed for
+      // this document before the edit (guards against a vacuously-true test).
+      const chunkIdsBefore = await chunkIdsFor(documentId);
+      const beforeHits = await search.searchBm25(CHUNK_INDEX, uniqueRemovedTerm, 50, workspaceId);
+      expect(beforeHits.some((h) => chunkIdsBefore.has(h.id))).toBe(true);
 
       // Re-ingest with the distinctive probe phrase removed — simulates an
       // edit. Overwrite the SAME blob key so the document's existing blobUri
@@ -391,7 +416,7 @@ describe.skipIf(!runDogfood)('dogfood integration (real services, real models)',
         join(CORPUS_DIR, 'support-tickets', `${editedDocId}.md`),
         'utf8',
       );
-      const edited = original.replace(/expired too soon/gi, 'stopped working unexpectedly');
+      const edited = original.replace(new RegExp(removedPhrase, 'gi'), addedPhrase);
       await blob.put(blobKey, new TextEncoder().encode(edited), 'text/markdown');
 
       const deps = buildDeps();
@@ -403,8 +428,31 @@ describe.skipIf(!runDogfood)('dogfood integration (real services, real models)',
       await pipeline.indexChunks(deps, documentId);
       await updateDocumentStatus(db, documentId, 'ready');
 
+      // Assert the actual index changed, directly against OpenSearch — not
+      // via the retriever/cache. The removed phrase must no longer resolve to
+      // any of this document's (possibly renamed/reindexed) chunk ids...
+      const chunkIdsAfter = await chunkIdsFor(documentId);
+      const afterRemovedHits = await search.searchBm25(
+        CHUNK_INDEX,
+        uniqueRemovedTerm,
+        50,
+        workspaceId,
+      );
+      expect(afterRemovedHits.some((h) => chunkIdsAfter.has(h.id))).toBe(false);
+
+      // ...and the newly-added phrase must now resolve to one of them.
+      const afterAddedHits = await search.searchBm25(CHUNK_INDEX, uniqueAddedTerm, 50, workspaceId);
+      expect(afterAddedHits.some((h) => chunkIdsAfter.has(h.id))).toBe(true);
+
+      // The retriever reflects this too: a fresh (non-cached) computation,
+      // and if the edited document still surfaces for the probe query, its
+      // returned text no longer contains the removed phrase.
       const after = await retriever.search(probeQuery, { workspaceId });
-      expect(after.cached).toBe(false); // corpus revision changed → not served from the old cache entry
+      expect(after.cached).toBe(false);
+      const editedResult = after.results.find((r) => r.documentId === documentId);
+      if (editedResult) {
+        expect(editedResult.text).not.toMatch(new RegExp(removedPhrase, 'i'));
+      }
     });
   });
 
