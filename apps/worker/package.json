@@ -8,7 +8,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",
-    "test:dogfood": "RUN_DOGFOOD_INTEGRATION=1 vitest run src/dogfood.integration.test.ts",
+    "test:dogfood": "RUN_DOGFOOD_INTEGRATION=1 vitest run src/dogfood.integration.test.ts --testTimeout=60000",
     "worker": "node --env-file=../../.env dist/worker.js",
     "ingest": "node --env-file=../../.env dist/cli/ingest.js",
     "seed": "node --env-file=../../.env dist/cli/seed.js",

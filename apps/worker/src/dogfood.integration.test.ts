@@ -6,7 +6,14 @@
  * the REAL local embedding + reranker models (no mocks, no fakes). Run:
  *
  *   pnpm infra:up && pnpm --filter @threadmark/db db:migrate
- *   RUN_DOGFOOD_INTEGRATION=1 pnpm --filter @threadmark/worker exec vitest run src/dogfood.integration.test.ts
+ *   pnpm test:dogfood                          # from repo root, or:
+ *   pnpm --filter @threadmark/worker test:dogfood
+ *
+ * NOTE: real embedding/rerank calls routinely take 6-12s locally. Only the
+ * heaviest tests (full-manifest ingest, re-seed) have per-test timeouts here;
+ * every other test relies on vitest's default (5s), which real service calls
+ * blow through. The `test:dogfood` scripts above bake in
+ * `--testTimeout=60000` — always run it that way, not a bare `vitest run`.
  *
  * Scope decision: ingestion here calls the pipeline functions directly
  * in-process (extractAndChunk → embedChunks → indexChunks), with the same
