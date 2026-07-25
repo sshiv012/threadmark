@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -9,11 +10,15 @@ import {
   addMembership,
   appendAgentStep,
   createAgentRun,
+  createEvalQuery,
+  createEvalReport,
   createEvidenceDocument,
   createUser,
   createWorkspace,
   deleteChunksNotIn,
   findEvidenceDocumentByChecksum,
+  findEvidenceDocumentByTitle,
+  findWorkspaceByName,
   getAgentRun,
   getChunksByDocument,
   getEvidenceDocument,
@@ -22,6 +27,7 @@ import {
   getWorkspace,
   getWorkspaceRetrievalRevision,
   listAgentSteps,
+  listEvalQueriesWithJudgments,
   listMemberships,
   searchChunksByVector,
   setChunkEmbedding,
@@ -29,6 +35,7 @@ import {
   updateAgentStep,
   updateDocumentStatus,
   upsertChunks,
+  upsertEvalJudgment,
 } from './repositories.js';
 import { EMBEDDING_DIMENSIONS } from './schema.js';
 import * as schema from './schema.js';
@@ -464,6 +471,367 @@ describe('retrieval reads: workspace isolation + ready-only filtering', () => {
       await seedEmbeddedChunk(wsA.id, 'ready', 1);
       const after = await getWorkspaceRetrievalRevision(db, wsB.id);
       expect(after).toBe(before);
+    });
+  });
+});
+
+describe('eval harness tables', () => {
+  describe('findWorkspaceByName / findEvidenceDocumentByTitle', () => {
+    it('finds an existing workspace by name, undefined when absent', async () => {
+      await createWorkspace(db, { name: 'Eval Corpus' });
+      expect(await findWorkspaceByName(db, 'Eval Corpus')).toMatchObject({ name: 'Eval Corpus' });
+      expect(await findWorkspaceByName(db, 'does not exist')).toBeUndefined();
+    });
+
+    it('finds an existing document by (workspace, title), undefined when absent', async () => {
+      const ws = await createWorkspace(db, { name: 'title-lookup' });
+      const doc = await createEvidenceDocument(db, {
+        workspaceId: ws.id,
+        sourceType: 'product_doc',
+        title: 'sharing-a-dashboard.md',
+        blobUri: 's3://evidence/x.md',
+        checksum: 'chk-1',
+      });
+      expect(await findEvidenceDocumentByTitle(db, ws.id, 'sharing-a-dashboard.md')).toMatchObject({
+        id: doc.id,
+      });
+      expect(await findEvidenceDocumentByTitle(db, ws.id, 'missing.md')).toBeUndefined();
+    });
+
+    it('never returns a document from another workspace even with an identical title', async () => {
+      const wsA = await createWorkspace(db, { name: 'title-iso-a' });
+      const wsB = await createWorkspace(db, { name: 'title-iso-b' });
+      const docA = await createEvidenceDocument(db, {
+        workspaceId: wsA.id,
+        sourceType: 'product_doc',
+        title: 'Spec.md',
+        blobUri: 's3://evidence/a.md',
+        checksum: 'chk-a',
+      });
+      await createEvidenceDocument(db, {
+        workspaceId: wsB.id,
+        sourceType: 'product_doc',
+        title: 'Spec.md',
+        blobUri: 's3://evidence/b.md',
+        checksum: 'chk-b',
+      });
+      expect(await findEvidenceDocumentByTitle(db, wsA.id, 'Spec.md')).toMatchObject({
+        id: docA.id,
+      });
+    });
+  });
+
+  describe('createEvalQuery', () => {
+    it('creates a new query', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-q-create' });
+      const q = await createEvalQuery(db, {
+        workspaceId: ws.id,
+        externalId: 'link-expiry-01',
+        queryText: 'set an expiry date on a share link',
+      });
+      expect(q.id).toBeTruthy();
+      expect(q).toMatchObject({
+        workspaceId: ws.id,
+        externalId: 'link-expiry-01',
+        queryText: 'set an expiry date on a share link',
+        notes: null,
+      });
+    });
+
+    it('rejects a raw duplicate (workspaceId, externalId) insert bypassing the upsert helper', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-q-raw-dup' });
+      await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q1', queryText: 'v1' });
+      await expect(
+        db.insert(schema.evalQueries).values({
+          workspaceId: ws.id,
+          externalId: 'q1',
+          queryText: 'v2',
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a workspaceId that does not exist (FK violation)', async () => {
+      await expect(
+        createEvalQuery(db, {
+          workspaceId: '00000000-0000-4000-8000-000000000000',
+          externalId: 'q1',
+          queryText: 'v1',
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('re-running with the same (workspace, externalId) updates queryText/notes in place, no duplicate row', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-q-upsert' });
+      await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q1', queryText: 'v1' });
+      const updated = await createEvalQuery(db, {
+        workspaceId: ws.id,
+        externalId: 'q1',
+        queryText: 'v2 edited',
+        notes: 'now has notes',
+      });
+      expect(updated).toMatchObject({ queryText: 'v2 edited', notes: 'now has notes' });
+
+      const all = await listEvalQueriesWithJudgments(db, ws.id);
+      expect(all).toHaveLength(1);
+      expect(all[0]!.query.queryText).toBe('v2 edited');
+    });
+
+    it('an identical externalId in two different workspaces does not collide', async () => {
+      const wsA = await createWorkspace(db, { name: 'eval-q-iso-a' });
+      const wsB = await createWorkspace(db, { name: 'eval-q-iso-b' });
+      await createEvalQuery(db, { workspaceId: wsA.id, externalId: 'q1', queryText: 'a' });
+      await createEvalQuery(db, { workspaceId: wsB.id, externalId: 'q1', queryText: 'b' });
+
+      const listA = await listEvalQueriesWithJudgments(db, wsA.id);
+      const listB = await listEvalQueriesWithJudgments(db, wsB.id);
+      expect(listA).toHaveLength(1);
+      expect(listB).toHaveLength(1);
+      expect(listA[0]!.query.queryText).toBe('a');
+      expect(listB[0]!.query.queryText).toBe('b');
+
+      // Re-upserting wsA's row must not touch wsB's row for the same externalId.
+      await createEvalQuery(db, { workspaceId: wsA.id, externalId: 'q1', queryText: 'a-edited' });
+      expect((await listEvalQueriesWithJudgments(db, wsB.id))[0]!.query.queryText).toBe('b');
+    });
+  });
+
+  describe('upsertEvalJudgment', () => {
+    async function seedQuery(workspaceName: string) {
+      const ws = await createWorkspace(db, { name: workspaceName });
+      const q = await createEvalQuery(db, {
+        workspaceId: ws.id,
+        externalId: 'q1',
+        queryText: 'probe',
+      });
+      return { ws, query: q };
+    }
+
+    it('creates a new judgment', async () => {
+      const { query } = await seedQuery('eval-j-create');
+      const j = await upsertEvalJudgment(db, {
+        queryId: query.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'overview',
+        relevance: 2,
+      });
+      expect(j).toMatchObject({ docId: 'doc-a', chunkSourceKey: 'overview', relevance: 2 });
+    });
+
+    it('rejects a raw duplicate (queryId, docId, chunkSourceKey) insert', async () => {
+      const { query } = await seedQuery('eval-j-raw-dup');
+      await upsertEvalJudgment(db, {
+        queryId: query.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'overview',
+        relevance: 2,
+      });
+      await expect(
+        db.insert(schema.evalJudgments).values({
+          queryId: query.id,
+          docId: 'doc-a',
+          chunkSourceKey: 'overview',
+          relevance: 3,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a queryId that does not exist (FK violation)', async () => {
+      await expect(
+        upsertEvalJudgment(db, {
+          queryId: '00000000-0000-4000-8000-000000000000',
+          docId: 'doc-a',
+          chunkSourceKey: 'overview',
+          relevance: 2,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('re-running with the same natural key updates relevance in place, no duplicate row', async () => {
+      const { query } = await seedQuery('eval-j-upsert');
+      await upsertEvalJudgment(db, {
+        queryId: query.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'overview',
+        relevance: 1,
+      });
+      await upsertEvalJudgment(db, {
+        queryId: query.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'overview',
+        relevance: 3,
+      });
+
+      const all = await listEvalQueriesWithJudgments(db, query.workspaceId);
+      expect(all[0]!.judgments).toHaveLength(1);
+      expect(all[0]!.judgments[0]!.relevance).toBe(3);
+    });
+
+    it('identical (docId, chunkSourceKey) under two different workspaces’ queries do not collide', async () => {
+      const a = await seedQuery('eval-j-iso-a');
+      const b = await seedQuery('eval-j-iso-b');
+      await upsertEvalJudgment(db, {
+        queryId: a.query.id,
+        docId: 'doc-x',
+        chunkSourceKey: 'k1',
+        relevance: 1,
+      });
+      await upsertEvalJudgment(db, {
+        queryId: b.query.id,
+        docId: 'doc-x',
+        chunkSourceKey: 'k1',
+        relevance: 2,
+      });
+
+      const listA = await listEvalQueriesWithJudgments(db, a.ws.id);
+      const listB = await listEvalQueriesWithJudgments(db, b.ws.id);
+      expect(listA[0]!.judgments[0]!.relevance).toBe(1);
+      expect(listB[0]!.judgments[0]!.relevance).toBe(2);
+    });
+  });
+
+  describe('listEvalQueriesWithJudgments', () => {
+    it('returns every query for the workspace unconditionally, including ones with zero judgments', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-list-all' });
+      const q0 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q0', queryText: 'x' });
+      const q1 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q1', queryText: 'y' });
+      await upsertEvalJudgment(db, {
+        queryId: q1.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'k1',
+        relevance: 2,
+      });
+      await upsertEvalJudgment(db, {
+        queryId: q1.id,
+        docId: 'doc-b',
+        chunkSourceKey: 'k2',
+        relevance: 1,
+      });
+
+      const all = await listEvalQueriesWithJudgments(db, ws.id);
+      expect(all).toHaveLength(2);
+      const zero = all.find((e) => e.query.id === q0.id)!;
+      const two = all.find((e) => e.query.id === q1.id)!;
+      expect(zero.judgments).toEqual([]);
+      expect(two.judgments).toHaveLength(2);
+    });
+
+    it('never includes another workspace’s queries/judgments, even with identical externalId/docId values', async () => {
+      const wsA = await createWorkspace(db, { name: 'eval-list-iso-a' });
+      const wsB = await createWorkspace(db, { name: 'eval-list-iso-b' });
+      const qA = await createEvalQuery(db, { workspaceId: wsA.id, externalId: 'q1', queryText: 'a' });
+      const qB = await createEvalQuery(db, { workspaceId: wsB.id, externalId: 'q1', queryText: 'b' });
+      await upsertEvalJudgment(db, {
+        queryId: qA.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'k1',
+        relevance: 2,
+      });
+      await upsertEvalJudgment(db, {
+        queryId: qB.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'k1',
+        relevance: 3,
+      });
+
+      const listA = await listEvalQueriesWithJudgments(db, wsA.id);
+      expect(listA).toHaveLength(1);
+      expect(listA[0]!.query.id).toBe(qA.id);
+      expect(listA[0]!.judgments[0]!.relevance).toBe(2);
+    });
+  });
+
+  describe('createEvalReport', () => {
+    it('inserts and defaults kind to retrieval', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-report-default' });
+      const report = await createEvalReport(db, {
+        workspaceId: ws.id,
+        configName: 'hybrid_rerank',
+        config: { topK: 8, candidateK: 30 },
+        metrics: { precisionAt5: 0.8 },
+      });
+      expect(report.kind).toBe('retrieval');
+    });
+
+    it('accepts kind=trajectory even though nothing produces it yet', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-report-trajectory' });
+      const report = await createEvalReport(db, {
+        workspaceId: ws.id,
+        kind: 'trajectory',
+        configName: 'llm_judge_v1',
+        config: {},
+        metrics: {},
+      });
+      expect(report.kind).toBe('trajectory');
+    });
+
+    it('round-trips deeply nested config/metrics jsonb exactly, and null perQuery distinctly', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-report-jsonb' });
+      const config = {
+        retriever: { name: 'hybrid', k: 10, weights: [0.6, 0.4] },
+        rerank: { enabled: true, model: 'bge-reranker' },
+      };
+      const metrics = {
+        overall: { precisionAt5: 0.8, recallAt10: 0.65, mrr: 0.9, ndcgAt10: 0.77 },
+        byQuery: [{ externalId: 'q1', precisionAt5: 1.0 }],
+      };
+      const report = await createEvalReport(db, {
+        workspaceId: ws.id,
+        configName: 'hybrid_rerank',
+        config,
+        metrics,
+        perQuery: null,
+      });
+      expect(report.config).toEqual(config);
+      expect(report.metrics).toEqual(metrics);
+      expect(report.perQuery).toBeNull();
+    });
+  });
+
+  describe('cascade delete', () => {
+    it('deleting a workspace deletes its eval_queries, their eval_judgments, and its eval_reports', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-cascade-ws' });
+      const q = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q1', queryText: 'x' });
+      await upsertEvalJudgment(db, {
+        queryId: q.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'k1',
+        relevance: 2,
+      });
+      await createEvalReport(db, {
+        workspaceId: ws.id,
+        configName: 'hybrid_rerank',
+        config: {},
+        metrics: {},
+      });
+
+      await db.delete(schema.workspaces).where(eq(schema.workspaces.id, ws.id));
+
+      expect(await listEvalQueriesWithJudgments(db, ws.id)).toEqual([]);
+    });
+
+    it('deleting one eval_query deletes only its own eval_judgments, not a sibling query’s', async () => {
+      const ws = await createWorkspace(db, { name: 'eval-cascade-query' });
+      const q1 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q1', queryText: 'x' });
+      const q2 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q2', queryText: 'y' });
+      await upsertEvalJudgment(db, {
+        queryId: q1.id,
+        docId: 'doc-a',
+        chunkSourceKey: 'k1',
+        relevance: 2,
+      });
+      await upsertEvalJudgment(db, {
+        queryId: q2.id,
+        docId: 'doc-b',
+        chunkSourceKey: 'k2',
+        relevance: 1,
+      });
+
+      await db.delete(schema.evalQueries).where(eq(schema.evalQueries.id, q1.id));
+
+      const all = await listEvalQueriesWithJudgments(db, ws.id);
+      expect(all).toHaveLength(1);
+      expect(all[0]!.query.id).toBe(q2.id);
+      expect(all[0]!.judgments).toHaveLength(1);
     });
   });
 });

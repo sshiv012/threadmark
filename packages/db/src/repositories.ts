@@ -10,6 +10,9 @@ import {
   agentRuns,
   agentSteps,
   chunks,
+  evalJudgments,
+  evalQueries,
+  evalReports,
   evidenceDocuments,
   memberships,
   users,
@@ -20,12 +23,18 @@ import {
   type AgentStepStatus,
   type Chunk,
   type DocumentStatus,
+  type EvalJudgment,
+  type EvalQuery,
+  type EvalReport,
   type EvidenceDocument,
   type EvidenceSourceType,
   type Membership,
   type NewAgentRun,
   type NewAgentStep,
   type NewChunk,
+  type NewEvalJudgment,
+  type NewEvalQuery,
+  type NewEvalReport,
   type NewEvidenceDocument,
   type NewMembership,
   type NewUser,
@@ -42,6 +51,19 @@ export async function createWorkspace(db: Database, input: NewWorkspace): Promis
 
 export async function getWorkspace(db: Database, id: string): Promise<Workspace | undefined> {
   const [row] = await db.select().from(workspaces).where(eq(workspaces.id, id)).limit(1);
+  return row;
+}
+
+/**
+ * Read-only lookup by name — distinct from `findOrCreateWorkspaceByName`:
+ * callers that need to distinguish "not seeded yet" from "auto-create it"
+ * (e.g. the eval harness, which should error with a clear "run eval:seed
+ * first" message rather than silently creating an empty workspace) use this.
+ * Same non-uniqueness caveat: workspace names aren't unique, so with
+ * duplicates this returns *a* match, not a specific one.
+ */
+export async function findWorkspaceByName(db: Database, name: string): Promise<Workspace | undefined> {
+  const [row] = await db.select().from(workspaces).where(eq(workspaces.name, name)).limit(1);
   return row;
 }
 
@@ -112,6 +134,25 @@ export async function getEvidenceDocument(
     .select()
     .from(evidenceDocuments)
     .where(eq(evidenceDocuments.id, id))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Look up a document by (workspace, title) — the eval harness resolves a
+ * manifest doc_id to its evidence_document this way (the eval-seed ingestion
+ * path sets title = docId, unlike the regular ingest CLI). Title isn't
+ * unique, so with duplicates this returns *a* match, not a specific one.
+ */
+export async function findEvidenceDocumentByTitle(
+  db: Database,
+  workspaceId: string,
+  title: string,
+): Promise<EvidenceDocument | undefined> {
+  const [row] = await db
+    .select()
+    .from(evidenceDocuments)
+    .where(and(eq(evidenceDocuments.workspaceId, workspaceId), eq(evidenceDocuments.title, title)))
     .limit(1);
   return row;
 }
@@ -361,4 +402,86 @@ export async function getWorkspaceRetrievalRevision(
       ),
     );
   return `${docRow?.count ?? 0}:${chunkRow?.count ?? 0}:${chunkRow?.contentFingerprint ?? ''}`;
+}
+
+// ── Eval harness ─────────────────────────────────────────────────────────────
+/**
+ * Upsert on (workspaceId, externalId) — re-running eval:seed after editing a
+ * fixture's query text/notes updates the row in place rather than silently
+ * keeping the stale value, matching `upsertChunks`'s existing convention.
+ */
+export async function createEvalQuery(db: Database, input: NewEvalQuery): Promise<EvalQuery> {
+  const [row] = await db
+    .insert(evalQueries)
+    .values(input)
+    .onConflictDoUpdate({
+      target: [evalQueries.workspaceId, evalQueries.externalId],
+      set: {
+        queryText: sql`excluded.query_text`,
+        notes: sql`excluded.notes`,
+      },
+    })
+    .returning();
+  return row!;
+}
+
+/**
+ * Upsert on (queryId, docId, chunkSourceKey) — same update-in-place
+ * convention as `createEvalQuery`: a re-graded judgment overwrites the old
+ * relevance value rather than being ignored.
+ */
+export async function upsertEvalJudgment(
+  db: Database,
+  input: NewEvalJudgment,
+): Promise<EvalJudgment> {
+  const [row] = await db
+    .insert(evalJudgments)
+    .values(input)
+    .onConflictDoUpdate({
+      target: [evalJudgments.queryId, evalJudgments.docId, evalJudgments.chunkSourceKey],
+      set: {
+        relevance: sql`excluded.relevance`,
+      },
+    })
+    .returning();
+  return row!;
+}
+
+export async function createEvalReport(db: Database, input: NewEvalReport): Promise<EvalReport> {
+  const [row] = await db.insert(evalReports).values(input).returning();
+  return row!;
+}
+
+export interface EvalQueryWithJudgments {
+  query: EvalQuery;
+  judgments: EvalJudgment[];
+}
+
+/** Every eval_query in a workspace, joined with its judgments (possibly empty). */
+export async function listEvalQueriesWithJudgments(
+  db: Database,
+  workspaceId: string,
+): Promise<EvalQueryWithJudgments[]> {
+  const queries = await db
+    .select()
+    .from(evalQueries)
+    .where(eq(evalQueries.workspaceId, workspaceId));
+  if (queries.length === 0) return [];
+
+  const judgmentRows = await db
+    .select()
+    .from(evalJudgments)
+    .where(
+      inArray(
+        evalJudgments.queryId,
+        queries.map((q) => q.id),
+      ),
+    );
+  const byQueryId = new Map<string, EvalJudgment[]>();
+  for (const j of judgmentRows) {
+    const list = byQueryId.get(j.queryId) ?? [];
+    list.push(j);
+    byQueryId.set(j.queryId, list);
+  }
+  return queries.map((query) => ({ query, judgments: byQueryId.get(query.id) ?? [] }));
 }

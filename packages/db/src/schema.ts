@@ -5,11 +5,13 @@
  * OpenSearch and the pgvector index are derived and rebuildable from here.
  *
  * Later PRs add prd / prd_branch / prd_block / prd_block_version / citation /
- * comment / agent_run / agent_step / eval_* / memory tables.
+ * comment / memory tables. agent_run / agent_step (PR5b-1) and eval_* (PR7)
+ * already landed.
  */
 import {
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -61,6 +63,11 @@ export const agentRunStatus = pgEnum('agent_run_status', [
 ]);
 
 export const agentStepStatus = pgEnum('agent_step_status', ['running', 'completed', 'failed']);
+
+// 'trajectory' is reserved for a future LLM-judge tier over agent traces —
+// unused today, mirrors how agent_run_kind reserves 'prd_generation' ahead of
+// the PRD-generation workflow existing.
+export const evalReportKind = pgEnum('eval_report_kind', ['retrieval', 'trajectory']);
 
 // ── Tables ───────────────────────────────────────────────────────────────────
 export const workspaces = pgTable('workspaces', {
@@ -177,6 +184,72 @@ export const agentSteps = pgTable(
   (table) => [index('agent_steps_run_idx').on(table.runId)],
 );
 
+export const evalQueries = pgTable(
+  'eval_queries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    // Fixture-stable slug; the idempotency key eval-seed upserts against.
+    externalId: text('external_id').notNull(),
+    queryText: text('query_text').notNull(),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('eval_queries_workspace_external_id_uniq').on(table.workspaceId, table.externalId),
+  ],
+);
+
+export const evalJudgments = pgTable(
+  'eval_judgments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    queryId: uuid('query_id')
+      .notNull()
+      .references(() => evalQueries.id, { onDelete: 'cascade' }),
+    // Durable natural key — NOT chunks.id, which is regenerated on fresh
+    // ingest. docId matches evidence_documents.title for the eval corpus;
+    // chunkSourceKey matches chunks.source_key (already stable for unchanged
+    // content). Resolved to a live chunk at seed time, never persisted here.
+    docId: text('doc_id').notNull(),
+    chunkSourceKey: text('chunk_source_key').notNull(),
+    // 0 (not relevant) .. 3 (primary answer); app-validated, not DB-constrained.
+    relevance: integer('relevance').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('eval_judgments_query_doc_chunk_uniq').on(
+      table.queryId,
+      table.docId,
+      table.chunkSourceKey,
+    ),
+  ],
+);
+
+export const evalReports = pgTable(
+  'eval_reports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    kind: evalReportKind('kind').notNull().default('retrieval'),
+    // Free text, not enum: 'lexical_only'|'vector_only'|'hybrid_no_rerank'|
+    // 'hybrid_rerank' today; a future eval tier's config names need no
+    // migration to add.
+    configName: text('config_name').notNull(),
+    config: jsonb('config').notNull(),
+    metrics: jsonb('metrics').notNull(),
+    perQuery: jsonb('per_query'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('eval_reports_workspace_kind_idx').on(table.workspaceId, table.kind, table.createdAt),
+  ],
+);
+
 // ── Inferred types ───────────────────────────────────────────────────────────
 export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
@@ -192,6 +265,12 @@ export type AgentRun = typeof agentRuns.$inferSelect;
 export type NewAgentRun = typeof agentRuns.$inferInsert;
 export type AgentStep = typeof agentSteps.$inferSelect;
 export type NewAgentStep = typeof agentSteps.$inferInsert;
+export type EvalQuery = typeof evalQueries.$inferSelect;
+export type NewEvalQuery = typeof evalQueries.$inferInsert;
+export type EvalJudgment = typeof evalJudgments.$inferSelect;
+export type NewEvalJudgment = typeof evalJudgments.$inferInsert;
+export type EvalReport = typeof evalReports.$inferSelect;
+export type NewEvalReport = typeof evalReports.$inferInsert;
 
 export type MembershipRole = (typeof membershipRole.enumValues)[number];
 export type DocumentStatus = (typeof documentStatus.enumValues)[number];
@@ -199,3 +278,4 @@ export type EvidenceSourceType = (typeof evidenceSourceType.enumValues)[number];
 export type AgentRunKind = (typeof agentRunKind.enumValues)[number];
 export type AgentRunStatus = (typeof agentRunStatus.enumValues)[number];
 export type AgentStepStatus = (typeof agentStepStatus.enumValues)[number];
+export type EvalReportKind = (typeof evalReportKind.enumValues)[number];
