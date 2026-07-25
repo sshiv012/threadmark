@@ -26,6 +26,7 @@ COMPOSE=(docker compose --env-file .env -f infra/docker/docker-compose.yml)
 OPENSEARCH_PORT="${OPENSEARCH_PORT:-9200}"
 MINIO_API_PORT="${MINIO_API_PORT:-9000}"
 TEMPORAL_UI_PORT="${TEMPORAL_UI_PORT:-8233}"
+JAEGER_UI_PORT="${JAEGER_UI_PORT:-16686}"
 POSTGRES_USER="${POSTGRES_USER:-threadmark}"
 POSTGRES_DB="${POSTGRES_DB:-threadmark}"
 
@@ -73,6 +74,7 @@ check "redis"        redis_ok
 check "opensearch"   curl -sf "http://localhost:${OPENSEARCH_PORT}/_cluster/health"
 check "minio"        curl -sf "http://localhost:${MINIO_API_PORT}/minio/health/live"
 check "temporal-ui"  curl -sf "http://localhost:${TEMPORAL_UI_PORT}/"
+check "jaeger"       curl -sf "http://localhost:${JAEGER_UI_PORT}/"
 
 echo
 if [[ "${failures}" -eq 0 ]]; then
