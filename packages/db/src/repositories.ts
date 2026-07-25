@@ -254,7 +254,9 @@ export interface VectorHit {
 
 /**
  * Exact pgvector kNN over a workspace's embedded chunks (cosine distance).
- * Exact scan — no ANN index yet; establish a recall baseline first.
+ * Exact scan — no ANN index yet; establish a recall baseline first. Only
+ * `ready` documents are candidates — a failed or currently re-indexing
+ * document must not surface in results.
  */
 export async function searchChunksByVector(
   db: Database,
@@ -268,7 +270,13 @@ export async function searchChunksByVector(
     .select({ chunkId: chunks.id, documentId: chunks.documentId, distance })
     .from(chunks)
     .innerJoin(evidenceDocuments, eq(chunks.documentId, evidenceDocuments.id))
-    .where(and(eq(evidenceDocuments.workspaceId, workspaceId), isNotNull(chunks.embedding)))
+    .where(
+      and(
+        eq(evidenceDocuments.workspaceId, workspaceId),
+        eq(evidenceDocuments.status, 'ready'),
+        isNotNull(chunks.embedding),
+      ),
+    )
     .orderBy(distance)
     .limit(limit);
 }
@@ -281,10 +289,18 @@ export interface RetrievalChunk {
   text: string;
 }
 
-/** Load chunk text + owning-document metadata for a set of chunk ids. */
+/**
+ * Load chunk text + owning-document metadata for a set of chunk ids.
+ * `workspaceId` is REQUIRED and enforced here as defense in depth: even if a
+ * candidate id leaked in from another workspace (e.g. a lexical index bug),
+ * hydration will silently drop it rather than return foreign content. Also
+ * only hydrates `ready` documents, so a stale/failed doc's chunk never reaches
+ * the caller even if it's still indexed in a derived store.
+ */
 export async function getRetrievalChunksByIds(
   db: Database,
   ids: string[],
+  workspaceId: string,
 ): Promise<RetrievalChunk[]> {
   if (ids.length === 0) return [];
   return db
@@ -297,5 +313,52 @@ export async function getRetrievalChunksByIds(
     })
     .from(chunks)
     .innerJoin(evidenceDocuments, eq(chunks.documentId, evidenceDocuments.id))
-    .where(inArray(chunks.id, ids));
+    .where(
+      and(
+        inArray(chunks.id, ids),
+        eq(evidenceDocuments.workspaceId, workspaceId),
+        eq(evidenceDocuments.status, 'ready'),
+      ),
+    );
+}
+
+/**
+ * A signal that changes whenever a workspace's ready, searchable corpus
+ * changes in any way that would make a cached retrieval result stale: a
+ * document becomes ready/un-ready, a chunk is added or removed, OR a chunk's
+ * content changes (even if the document/chunk COUNTS end up identical — e.g.
+ * a re-ingest that edits one chunk's text without adding/removing chunks,
+ * which a pure count would miss). Combines a count with a content_hash
+ * aggregate, no schema migration required.
+ *
+ * Not a perfect fingerprint of embedding vectors themselves (two different
+ * content_hash-identical embeddings under different models are still
+ * distinguished separately via the embedding-model cache-key component), but
+ * covers ingestion changes cheaply with two indexed queries.
+ */
+export async function getWorkspaceRetrievalRevision(
+  db: Database,
+  workspaceId: string,
+): Promise<string> {
+  const [docRow] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(evidenceDocuments)
+    .where(
+      and(eq(evidenceDocuments.workspaceId, workspaceId), eq(evidenceDocuments.status, 'ready')),
+    );
+  const [chunkRow] = await db
+    .select({
+      count: sql<number>`count(*)`,
+      contentFingerprint: sql<string>`md5(coalesce(string_agg(${chunks.contentHash}, ',' order by ${chunks.id}), ''))`,
+    })
+    .from(chunks)
+    .innerJoin(evidenceDocuments, eq(chunks.documentId, evidenceDocuments.id))
+    .where(
+      and(
+        eq(evidenceDocuments.workspaceId, workspaceId),
+        eq(evidenceDocuments.status, 'ready'),
+        isNotNull(chunks.embedding),
+      ),
+    );
+  return `${docRow?.count ?? 0}:${chunkRow?.count ?? 0}:${chunkRow?.contentFingerprint ?? ''}`;
 }

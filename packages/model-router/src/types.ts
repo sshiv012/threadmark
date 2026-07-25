@@ -59,6 +59,14 @@ export interface RerankScore {
   id: string;
   /** Index of this document in the original request.documents array. */
   index: number;
+  /**
+   * Relevance in (0, 1), higher = more relevant. This is an interface
+   * contract, not a hint: every RerankProvider MUST normalize its own raw
+   * output (logits, distances, whatever its underlying model emits) before
+   * returning — callers must never apply their own normalization on top,
+   * since that would double-transform providers that already comply (e.g.
+   * sigmoid(sigmoid(x)) silently shrinks the score range).
+   */
   score: number;
 }
 
@@ -70,6 +78,8 @@ export interface RerankResult {
 
 export interface RerankProvider {
   readonly name: string;
+  /** Concrete model identifier (for cache-key/provenance versioning). */
+  readonly model: string;
   rerank(request: RerankRequest): Promise<RerankResult>;
 }
 

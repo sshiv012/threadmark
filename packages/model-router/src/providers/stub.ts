@@ -64,6 +64,7 @@ export class StubEmbeddingProvider implements EmbeddingProvider {
 
 export class StubRerankProvider implements RerankProvider {
   readonly name = 'stub';
+  readonly model = 'stub';
 
   rerank(request: RerankRequest): Promise<RerankResult> {
     const queryTokens = new Set(tokenize(request.query));

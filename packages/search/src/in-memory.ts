@@ -32,10 +32,16 @@ export class InMemorySearchIndex implements SearchIndex {
     return Promise.resolve();
   }
 
-  searchBm25(index: string, query: string, topK: number): Promise<SearchHit[]> {
+  searchBm25(
+    index: string,
+    query: string,
+    topK: number,
+    workspaceId: string,
+  ): Promise<SearchHit[]> {
     const queryTerms = new Set(tokenize(query));
     const hits: SearchHit[] = [];
     for (const chunk of this.index(index).values()) {
+      if (chunk.workspaceId !== workspaceId) continue;
       let score = 0;
       for (const term of tokenize(chunk.text)) if (queryTerms.has(term)) score++;
       if (score > 0) hits.push({ id: chunk.id, score });

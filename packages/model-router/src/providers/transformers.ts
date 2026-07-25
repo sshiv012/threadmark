@@ -19,6 +19,11 @@ import type {
 export const DEFAULT_EMBEDDING_MODEL = 'Xenova/bge-small-en-v1.5';
 export const DEFAULT_RERANK_MODEL = 'Xenova/bge-reranker-base';
 
+/** Map a raw cross-encoder logit to (0,1). Monotonic — ordering is preserved. */
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
 /** Minimal feature-extraction pipeline shape we depend on. */
 export interface FeatureExtractor {
   (
@@ -82,7 +87,7 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
 
 export class TransformersRerankProvider implements RerankProvider {
   readonly name = 'transformers';
-  private readonly model: string;
+  readonly model: string;
   private readonly load: () => Promise<CrossEncoder>;
   private encoderPromise?: Promise<CrossEncoder>;
 
@@ -104,10 +109,14 @@ export class TransformersRerankProvider implements RerankProvider {
       request.query,
       request.documents.map((doc) => doc.text),
     );
+    // bge-reranker (and cross-encoders generally) emit a raw logit, not a
+    // bounded relevance score. Normalize here, at the boundary that knows the
+    // output is a logit, so this provider satisfies the RerankProvider
+    // contract (score in (0,1)) regardless of the underlying model's scale.
     const scored: RerankScore[] = request.documents.map((doc, index) => ({
       id: doc.id,
       index,
-      score: scores[index] ?? 0,
+      score: sigmoid(scores[index] ?? 0),
     }));
     scored.sort((a, b) => b.score - a.score || a.index - b.index);
     const topK = request.topK ?? scored.length;

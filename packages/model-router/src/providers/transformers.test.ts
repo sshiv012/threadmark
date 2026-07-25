@@ -58,9 +58,13 @@ describe('TransformersEmbeddingProvider (injected)', () => {
 });
 
 describe('TransformersRerankProvider (injected)', () => {
+  // The fake stands in for the real cross-encoder, which emits raw logits
+  // (unbounded reals) — these values are deliberately NOT in (0,1) so tests
+  // prove the provider normalizes them, rather than merely being consistent
+  // with an already-normalized fake.
   const fakeEncoder: CrossEncoder = {
     score: (_query, documents) =>
-      Promise.resolve(documents.map((d) => (d.includes('good') ? 0.9 : 0.1))),
+      Promise.resolve(documents.map((d) => (d.includes('good') ? 4.5 : -3.2))),
   };
 
   it('sorts by cross-encoder score descending', async () => {
@@ -74,7 +78,25 @@ describe('TransformersRerankProvider (injected)', () => {
       ],
     });
     expect(results.map((r) => r.id)).toEqual(['b', 'a', 'c']);
-    expect(results[0]!.score).toBeCloseTo(0.9);
+  });
+
+  it('normalizes raw logits to a (0,1) relevance score (sigmoid)', async () => {
+    const provider = new TransformersRerankProvider({ load: () => Promise.resolve(fakeEncoder) });
+    const { results } = await provider.rerank({
+      query: 'q',
+      documents: [
+        { id: 'a', text: 'bad' },
+        { id: 'b', text: 'good match' },
+      ],
+    });
+    for (const r of results) {
+      expect(r.score).toBeGreaterThan(0);
+      expect(r.score).toBeLessThan(1);
+    }
+    const good = results.find((r) => r.id === 'b')!;
+    const bad = results.find((r) => r.id === 'a')!;
+    expect(good.score).toBeCloseTo(1 / (1 + Math.exp(-4.5)), 6);
+    expect(bad.score).toBeCloseTo(1 / (1 + Math.exp(3.2)), 6);
   });
 
   it('respects topK with stable tie-breaking', async () => {

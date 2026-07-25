@@ -107,6 +107,9 @@ export async function embedChunks(deps: IngestionDeps, documentId: string): Prom
 
 /** Replace this document's OpenSearch entries with its current chunks. */
 export async function indexChunks(deps: IngestionDeps, documentId: string): Promise<number> {
+  const document = await getEvidenceDocument(deps.db, documentId);
+  if (!document) throw new Error(`document not found: ${documentId}`);
+
   const chunks = await getChunksByDocument(deps.db, documentId);
   await deps.search.ensureIndex(CHUNK_INDEX);
   // Delete-then-index so chunk ids removed/renamed since last ingest don't
@@ -114,7 +117,12 @@ export async function indexChunks(deps: IngestionDeps, documentId: string): Prom
   await deps.search.deleteByDocument(CHUNK_INDEX, documentId);
   await deps.search.indexChunks(
     CHUNK_INDEX,
-    chunks.map((chunk) => ({ id: chunk.id, documentId, text: chunk.text })),
+    chunks.map((chunk) => ({
+      id: chunk.id,
+      documentId,
+      workspaceId: document.workspaceId,
+      text: chunk.text,
+    })),
     { refresh: true },
   );
   return chunks.length;
