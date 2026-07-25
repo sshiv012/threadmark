@@ -6,11 +6,13 @@
  */
 import { fileURLToPath } from 'node:url';
 import { NativeConnection, Worker } from '@temporalio/worker';
+import { initTelemetry } from '@threadmark/telemetry';
 import * as activities from './activities.js';
 import { env } from './env.js';
 import { INGESTION_TASK_QUEUE } from './shared.js';
 
 async function main(): Promise<void> {
+  const shutdownTelemetry = initTelemetry('threadmark-worker');
   const connection = await NativeConnection.connect({ address: env.temporalAddress });
   try {
     const worker = await Worker.create({
@@ -23,6 +25,7 @@ async function main(): Promise<void> {
     await worker.run();
   } finally {
     await connection.close();
+    await shutdownTelemetry();
   }
 }
 

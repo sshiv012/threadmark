@@ -2,6 +2,7 @@
  * Assemble a ModelRouter from a validated config. This is the only place that
  * decides which concrete provider backs each capability.
  */
+import { withSpan } from '@threadmark/telemetry';
 import type { ModelRouterConfig } from './config.js';
 import { GeminiGenerationProvider } from './providers/gemini.js';
 import {
@@ -60,8 +61,21 @@ export function createModelRouter(config: ModelRouterConfig): ModelRouter {
   const rerank = buildRerank(config.rerank);
   return {
     providers: { generation, embedding, rerank },
-    generate: (request) => generation.generate(request),
-    embed: (request) => embedding.embed(request),
-    rerank: (request) => rerank.rerank(request),
+    generate: (request) =>
+      withSpan('model_router.generate', { 'model_router.provider': generation.name }, () =>
+        generation.generate(request),
+      ),
+    embed: (request) =>
+      withSpan(
+        'model_router.embed',
+        { 'model_router.provider': embedding.name, 'model_router.model': embedding.model },
+        () => embedding.embed(request),
+      ),
+    rerank: (request) =>
+      withSpan(
+        'model_router.rerank',
+        { 'model_router.provider': rerank.name, 'model_router.model': rerank.model },
+        () => rerank.rerank(request),
+      ),
   };
 }
