@@ -62,7 +62,10 @@ export async function getWorkspace(db: Database, id: string): Promise<Workspace 
  * Same non-uniqueness caveat: workspace names aren't unique, so with
  * duplicates this returns *a* match, not a specific one.
  */
-export async function findWorkspaceByName(db: Database, name: string): Promise<Workspace | undefined> {
+export async function findWorkspaceByName(
+  db: Database,
+  name: string,
+): Promise<Workspace | undefined> {
   const [row] = await db.select().from(workspaces).where(eq(workspaces.name, name)).limit(1);
   return row;
 }

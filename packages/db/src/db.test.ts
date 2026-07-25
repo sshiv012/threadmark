@@ -692,8 +692,16 @@ describe('eval harness tables', () => {
   describe('listEvalQueriesWithJudgments', () => {
     it('returns every query for the workspace unconditionally, including ones with zero judgments', async () => {
       const ws = await createWorkspace(db, { name: 'eval-list-all' });
-      const q0 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q0', queryText: 'x' });
-      const q1 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q1', queryText: 'y' });
+      const q0 = await createEvalQuery(db, {
+        workspaceId: ws.id,
+        externalId: 'q0',
+        queryText: 'x',
+      });
+      const q1 = await createEvalQuery(db, {
+        workspaceId: ws.id,
+        externalId: 'q1',
+        queryText: 'y',
+      });
       await upsertEvalJudgment(db, {
         queryId: q1.id,
         docId: 'doc-a',
@@ -718,8 +726,16 @@ describe('eval harness tables', () => {
     it('never includes another workspace’s queries/judgments, even with identical externalId/docId values', async () => {
       const wsA = await createWorkspace(db, { name: 'eval-list-iso-a' });
       const wsB = await createWorkspace(db, { name: 'eval-list-iso-b' });
-      const qA = await createEvalQuery(db, { workspaceId: wsA.id, externalId: 'q1', queryText: 'a' });
-      const qB = await createEvalQuery(db, { workspaceId: wsB.id, externalId: 'q1', queryText: 'b' });
+      const qA = await createEvalQuery(db, {
+        workspaceId: wsA.id,
+        externalId: 'q1',
+        queryText: 'a',
+      });
+      const qB = await createEvalQuery(db, {
+        workspaceId: wsB.id,
+        externalId: 'q1',
+        queryText: 'b',
+      });
       await upsertEvalJudgment(db, {
         queryId: qA.id,
         docId: 'doc-a',
@@ -811,8 +827,16 @@ describe('eval harness tables', () => {
 
     it('deleting one eval_query deletes only its own eval_judgments, not a sibling query’s', async () => {
       const ws = await createWorkspace(db, { name: 'eval-cascade-query' });
-      const q1 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q1', queryText: 'x' });
-      const q2 = await createEvalQuery(db, { workspaceId: ws.id, externalId: 'q2', queryText: 'y' });
+      const q1 = await createEvalQuery(db, {
+        workspaceId: ws.id,
+        externalId: 'q1',
+        queryText: 'x',
+      });
+      const q2 = await createEvalQuery(db, {
+        workspaceId: ws.id,
+        externalId: 'q2',
+        queryText: 'y',
+      });
       await upsertEvalJudgment(db, {
         queryId: q1.id,
         docId: 'doc-a',
