@@ -53,18 +53,30 @@ export function initTelemetry(serviceName: string): () => Promise<void> {
   }
 
   return async () => {
+    // Note: if the timeout below wins the race, provider.shutdown() keeps
+    // running in the background — OTel's API gives no way to abort an
+    // in-flight export. The timeout only bounds how long THIS function
+    // makes the caller wait, not the underlying request itself.
+    let timeoutHandle: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
         provider.shutdown(),
-        new Promise<never>((_, reject) =>
-          setTimeout(
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
             () => reject(new Error(`telemetry shutdown exceeded ${SHUTDOWN_TIMEOUT_MS}ms`)),
             SHUTDOWN_TIMEOUT_MS,
-          ),
-        ),
+          );
+          // Never let this timer alone keep the process alive.
+          timeoutHandle.unref();
+        }),
       ]);
     } catch (error) {
       console.warn('[telemetry] provider shutdown failed:', error);
+    } finally {
+      // Clear on the fast path too — otherwise a successful shutdown still
+      // keeps the event loop (and any test/CLI process) alive for the full
+      // SHUTDOWN_TIMEOUT_MS waiting on a timer nothing needs anymore.
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   };
 }

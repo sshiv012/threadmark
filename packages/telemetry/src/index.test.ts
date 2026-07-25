@@ -226,6 +226,21 @@ describe('initTelemetry', () => {
       await expect(shutdown()).resolves.toBeUndefined();
     });
 
+    it('clears the internal shutdown-timeout timer on a fast/successful shutdown', async () => {
+      // Regression test: previously the race's timer was never cleared once
+      // provider.shutdown() won, so an otherwise-instant shutdown still left
+      // a live timer keeping the event loop (and any CLI/test process) alive
+      // for the full SHUTDOWN_TIMEOUT_MS. Wall-clock timing of the awaited
+      // call can't detect this (the promise itself resolves promptly either
+      // way) — asserting clearTimeout was actually invoked is what pins it.
+      delete process.env[ENDPOINT_ENV];
+      const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+      const shutdown = initTelemetry('test-service');
+      await shutdown();
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+      clearTimeoutSpy.mockRestore();
+    });
+
     it('returns an independently callable shutdown function when an endpoint is configured', async () => {
       process.env[ENDPOINT_ENV] = 'http://localhost:4318/v1/traces';
       const shutdown = initTelemetry('test-service');
