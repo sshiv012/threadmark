@@ -30,6 +30,7 @@ Links should support viewer-only access, expiry, and revoke.`;
 
 let deps: IngestionDeps;
 let documentId: string;
+let workspaceId: string;
 
 beforeEach(async () => {
   const pg = new PGlite({ extensions: { vector } });
@@ -48,6 +49,7 @@ beforeEach(async () => {
   deps = { db, blob, search, router, chunkers };
 
   const workspace = await findOrCreateWorkspaceByName(db, 'Test');
+  workspaceId = workspace.id;
   const { uri } = await blob.put('doc.md', new TextEncoder().encode(MARKDOWN), 'text/markdown');
   const document = await createEvidenceDocument(db, {
     workspaceId: workspace.id,
@@ -75,7 +77,12 @@ describe('ingestion pipeline', () => {
 
     const indexed = await indexChunks(deps, documentId);
     expect(indexed).toBe(chunked);
-    const hits = await deps.search.searchBm25(CHUNK_INDEX, 'external sharing links', 10);
+    const hits = await deps.search.searchBm25(
+      CHUNK_INDEX,
+      'external sharing links',
+      10,
+      workspaceId,
+    );
     expect(hits.length).toBeGreaterThan(0);
   });
 
@@ -110,8 +117,29 @@ describe('ingestion pipeline', () => {
 
     // The removed chunk is no longer searchable.
     const remaining = new Set(after.map((c) => c.id));
-    const hits = await deps.search.searchBm25(CHUNK_INDEX, 'viewer-only access expiry revoke', 10);
+    const hits = await deps.search.searchBm25(
+      CHUNK_INDEX,
+      'viewer-only access expiry revoke',
+      10,
+      workspaceId,
+    );
     expect(hits.every((h) => remaining.has(h.id))).toBe(true);
+  });
+
+  it('tags indexed chunks with the owning workspace (not just the document)', async () => {
+    await extractAndChunk(deps, documentId);
+    await embedChunks(deps, documentId);
+    await indexChunks(deps, documentId);
+
+    // A search scoped to a different workspace must find nothing, even though
+    // the content and document id are otherwise identical.
+    const otherWorkspaceHits = await deps.search.searchBm25(
+      CHUNK_INDEX,
+      'external sharing links',
+      10,
+      'some-other-workspace-id',
+    );
+    expect(otherWorkspaceHits).toEqual([]);
   });
 
   it('re-embeds chunks whose embedding model differs from the configured one', async () => {

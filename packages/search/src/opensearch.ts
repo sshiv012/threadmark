@@ -34,6 +34,7 @@ export class OpenSearchIndex implements SearchIndex {
           mappings: {
             properties: {
               documentId: { type: 'keyword' },
+              workspaceId: { type: 'keyword' },
               text: { type: 'text' },
             },
           },
@@ -50,7 +51,7 @@ export class OpenSearchIndex implements SearchIndex {
     if (chunks.length === 0) return;
     const body = chunks.flatMap((chunk) => [
       { index: { _index: index, _id: chunk.id } },
-      { documentId: chunk.documentId, text: chunk.text },
+      { documentId: chunk.documentId, workspaceId: chunk.workspaceId, text: chunk.text },
     ]);
     // refresh defaults to false — forcing a refresh per batch throttles throughput.
     const response = await this.client.bulk({ body, refresh: options.refresh ?? false });
@@ -69,10 +70,23 @@ export class OpenSearchIndex implements SearchIndex {
     }
   }
 
-  async searchBm25(index: string, query: string, topK: number): Promise<SearchHit[]> {
+  async searchBm25(
+    index: string,
+    query: string,
+    topK: number,
+    workspaceId: string,
+  ): Promise<SearchHit[]> {
     const response = await this.client.search({
       index,
-      body: { size: topK, query: { match: { text: query } } },
+      body: {
+        size: topK,
+        query: {
+          bool: {
+            must: [{ match: { text: query } }],
+            filter: [{ term: { workspaceId } }],
+          },
+        },
+      },
     });
     const hits = (response.body as SearchResponseBody).hits.hits;
     return hits.map((hit) => ({ id: String(hit._id), score: hit._score ?? 0 }));

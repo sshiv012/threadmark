@@ -12,14 +12,19 @@ import {
   createEvidenceDocument,
   createUser,
   createWorkspace,
+  deleteChunksNotIn,
   findEvidenceDocumentByChecksum,
   getAgentRun,
   getChunksByDocument,
   getEvidenceDocument,
+  getRetrievalChunksByIds,
   getUserByEmail,
   getWorkspace,
+  getWorkspaceRetrievalRevision,
   listAgentSteps,
   listMemberships,
+  searchChunksByVector,
+  setChunkEmbedding,
   updateAgentRunStatus,
   updateAgentStep,
   updateDocumentStatus,
@@ -296,5 +301,169 @@ describe('agent runs and steps (observability)', () => {
     expect(steps).toHaveLength(2);
     expect(steps[0]).toMatchObject({ attempt: 1, status: 'failed', error: 'provider timeout' });
     expect(steps[1]).toMatchObject({ attempt: 2, status: 'completed', outputSummary: '3 vectors' });
+  });
+});
+
+describe('retrieval reads: workspace isolation + ready-only filtering', () => {
+  function embeddingFor(seed: number): number[] {
+    return Array.from({ length: EMBEDDING_DIMENSIONS }, (_, i) => ((i + seed) % 7) / 10);
+  }
+
+  /** Seed a document (given status) with one embedded chunk; returns {documentId, chunkId}. */
+  async function seedEmbeddedChunk(
+    workspaceId: string,
+    status: 'queued' | 'extracting' | 'chunking' | 'embedding' | 'indexing' | 'ready' | 'failed',
+    seed: number,
+  ) {
+    const doc = await createEvidenceDocument(db, {
+      workspaceId,
+      sourceType: 'product_doc',
+      title: `doc-${seed}`,
+      blobUri: `s3://evidence/doc-${seed}.md`,
+      checksum: `chk-${seed}`,
+    });
+    await updateDocumentStatus(db, doc.id, status);
+    const [chunk] = await upsertChunks(db, [
+      {
+        documentId: doc.id,
+        ord: 0,
+        sourceKey: 'k',
+        contentHash: `h-${seed}`,
+        text: `chunk text ${seed}`,
+        tokenCount: 3,
+      },
+    ]);
+    await setChunkEmbedding(db, chunk!.id, embeddingFor(seed), 'stub');
+    return { documentId: doc.id, chunkId: chunk!.id };
+  }
+
+  describe('searchChunksByVector', () => {
+    it('never returns a chunk from another workspace', async () => {
+      const wsA = await createWorkspace(db, { name: 'A' });
+      const wsB = await createWorkspace(db, { name: 'B' });
+      const a = await seedEmbeddedChunk(wsA.id, 'ready', 1);
+      const b = await seedEmbeddedChunk(wsB.id, 'ready', 2);
+
+      const hitsA = await searchChunksByVector(db, wsA.id, embeddingFor(1), 10);
+      expect(hitsA.map((h) => h.chunkId)).toContain(a.chunkId);
+      expect(hitsA.map((h) => h.chunkId)).not.toContain(b.chunkId);
+    });
+
+    it.each(['queued', 'extracting', 'chunking', 'embedding', 'indexing', 'failed'] as const)(
+      'excludes chunks whose document status is %s',
+      async (status) => {
+        const ws = await createWorkspace(db, { name: `ws-${status}` });
+        const notReady = await seedEmbeddedChunk(ws.id, status, 1);
+        const ready = await seedEmbeddedChunk(ws.id, 'ready', 2);
+
+        const hits = await searchChunksByVector(db, ws.id, embeddingFor(1), 10);
+        expect(hits.map((h) => h.chunkId)).not.toContain(notReady.chunkId);
+        expect(hits.map((h) => h.chunkId)).toContain(ready.chunkId);
+      },
+    );
+
+    it('includes chunks whose document status is ready', async () => {
+      const ws = await createWorkspace(db, { name: 'ready-ws' });
+      const ready = await seedEmbeddedChunk(ws.id, 'ready', 1);
+      const hits = await searchChunksByVector(db, ws.id, embeddingFor(1), 10);
+      expect(hits.map((h) => h.chunkId)).toContain(ready.chunkId);
+    });
+  });
+
+  describe('getRetrievalChunksByIds', () => {
+    it('drops ids belonging to another workspace (defense in depth)', async () => {
+      const wsA = await createWorkspace(db, { name: 'hydrate-A' });
+      const wsB = await createWorkspace(db, { name: 'hydrate-B' });
+      const a = await seedEmbeddedChunk(wsA.id, 'ready', 10);
+      const b = await seedEmbeddedChunk(wsB.id, 'ready', 20);
+
+      const rows = await getRetrievalChunksByIds(db, [a.chunkId, b.chunkId], wsA.id);
+      expect(rows.map((r) => r.chunkId)).toEqual([a.chunkId]);
+    });
+
+    it('drops ids belonging to a non-ready document', async () => {
+      const ws = await createWorkspace(db, { name: 'hydrate-status' });
+      const failed = await seedEmbeddedChunk(ws.id, 'failed', 30);
+      const ready = await seedEmbeddedChunk(ws.id, 'ready', 31);
+
+      const rows = await getRetrievalChunksByIds(db, [failed.chunkId, ready.chunkId], ws.id);
+      expect(rows.map((r) => r.chunkId)).toEqual([ready.chunkId]);
+    });
+
+    it('returns empty for an empty id list without querying', async () => {
+      const ws = await createWorkspace(db, { name: 'empty-ids' });
+      expect(await getRetrievalChunksByIds(db, [], ws.id)).toEqual([]);
+    });
+  });
+
+  describe('getWorkspaceRetrievalRevision', () => {
+    it('changes when a new ready document with chunks is added', async () => {
+      const ws = await createWorkspace(db, { name: 'revision-add' });
+      const before = await getWorkspaceRetrievalRevision(db, ws.id);
+      await seedEmbeddedChunk(ws.id, 'ready', 1);
+      const after = await getWorkspaceRetrievalRevision(db, ws.id);
+      expect(after).not.toBe(before);
+    });
+
+    it('changes when a section is removed (fewer ready chunks)', async () => {
+      const ws = await createWorkspace(db, { name: 'revision-remove' });
+      const a = await seedEmbeddedChunk(ws.id, 'ready', 1);
+      const b = await seedEmbeddedChunk(ws.id, 'ready', 2);
+      const before = await getWorkspaceRetrievalRevision(db, ws.id);
+      await deleteChunksNotIn(db, a.documentId, []);
+      void b;
+      const after = await getWorkspaceRetrievalRevision(db, ws.id);
+      expect(after).not.toBe(before);
+    });
+
+    it('changes when a chunk is content-edited and re-embedded, with document/chunk COUNTS unchanged', async () => {
+      // The exact blind spot of a pure count-based signal: mirrors a full
+      // re-ingest cycle (extractAndChunk clears the stale embedding,
+      // embedChunks restores it) so the embedded-chunk count round-trips back
+      // to the same number — only the underlying content actually differs.
+      const ws = await createWorkspace(db, { name: 'revision-content-edit' });
+      const seeded = await seedEmbeddedChunk(ws.id, 'ready', 1);
+      const before = await getWorkspaceRetrievalRevision(db, ws.id);
+
+      await upsertChunks(db, [
+        {
+          documentId: seeded.documentId,
+          ord: 0,
+          sourceKey: 'k',
+          contentHash: 'a-different-hash',
+          text: 'edited text, same position, same chunk count',
+          tokenCount: 6,
+        },
+      ]);
+      const [editedChunk] = await getChunksByDocument(db, seeded.documentId);
+      // Simulate embedChunks completing: the embedded-chunk COUNT is restored
+      // to what it was before the edit.
+      await setChunkEmbedding(
+        db,
+        editedChunk!.id,
+        Array.from({ length: EMBEDDING_DIMENSIONS }, () => 0.5),
+        'stub',
+      );
+
+      const after = await getWorkspaceRetrievalRevision(db, ws.id);
+      expect(after).not.toBe(before);
+    });
+
+    it('is stable when nothing about the ready corpus changes', async () => {
+      const ws = await createWorkspace(db, { name: 'revision-stable' });
+      await seedEmbeddedChunk(ws.id, 'ready', 1);
+      const first = await getWorkspaceRetrievalRevision(db, ws.id);
+      const second = await getWorkspaceRetrievalRevision(db, ws.id);
+      expect(second).toBe(first);
+    });
+
+    it('is scoped per workspace', async () => {
+      const wsA = await createWorkspace(db, { name: 'revision-scope-a' });
+      const wsB = await createWorkspace(db, { name: 'revision-scope-b' });
+      const before = await getWorkspaceRetrievalRevision(db, wsB.id);
+      await seedEmbeddedChunk(wsA.id, 'ready', 1);
+      const after = await getWorkspaceRetrievalRevision(db, wsB.id);
+      expect(after).toBe(before);
+    });
   });
 });

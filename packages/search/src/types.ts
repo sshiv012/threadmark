@@ -7,6 +7,8 @@ export interface IndexedChunk {
   /** Chunk id (matches the chunks table primary key). */
   id: string;
   documentId: string;
+  /** Owning workspace — indexed and required at query time to prevent cross-workspace leaks. */
+  workspaceId: string;
   text: string;
 }
 
@@ -27,7 +29,13 @@ export interface IndexOptions {
 export interface SearchIndex {
   ensureIndex(index: string): Promise<void>;
   indexChunks(index: string, chunks: IndexedChunk[], options?: IndexOptions): Promise<void>;
-  searchBm25(index: string, query: string, topK: number): Promise<SearchHit[]>;
+  /**
+   * workspaceId is REQUIRED and must be enforced as a filter by every
+   * implementation — never rely on the caller re-checking results. This is the
+   * hard boundary that prevents one workspace's evidence leaking into another's
+   * search results.
+   */
+  searchBm25(index: string, query: string, topK: number, workspaceId: string): Promise<SearchHit[]>;
   /** Remove all chunks belonging to a document (re-ingest / delete). */
   deleteByDocument(index: string, documentId: string): Promise<void>;
 }
