@@ -25,27 +25,18 @@
  * real services and real models, which is the gap that mattered: a human
  * eyeballing `pnpm run retrieve` output is not a verification.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { S3BlobStore } from '@threadmark/blob';
 import { createChunkerRegistry } from '@threadmark/chunking';
 import {
-  appendAgentStep,
-  createAgentRun,
   createDb,
-  createEvidenceDocument,
   createWorkspace,
-  findEvidenceDocumentByChecksum,
   getChunksByDocument,
   getEvidenceDocument,
-  updateAgentRunStatus,
-  updateAgentStep,
   updateDocumentStatus,
-  type AgentStepStatus,
   type Database,
-  type EvidenceSourceType,
 } from '@threadmark/db';
 import { createModelRouter, loadModelRouterConfig } from '@threadmark/model-router';
 import { createRetriever, RedisCache, type Retriever } from '@threadmark/retrieval';
@@ -53,96 +44,14 @@ import { OpenSearchIndex } from '@threadmark/search';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseManifest, type ManifestEntry } from './cli/manifest.js';
+import { CORPUS_DIR, ingestEntryDirect, type IngestOutcome } from './direct-ingest.js';
 import { env } from './env.js';
-import { inferContentType } from './helpers.js';
 import * as pipeline from './pipeline.js';
 import type { IngestionDeps } from './pipeline.js';
 import { CHUNK_INDEX } from './shared.js';
 
 const runDogfood = process.env.RUN_DOGFOOD_INTEGRATION === '1';
-// Resolve relative to this file (not process.cwd()), which varies depending
-// on how the test is invoked (e.g. `pnpm --filter ... exec vitest` runs from
-// the package dir, not the repo root).
-const CORPUS_DIR = fileURLToPath(new URL('../../../fixtures/dashboard-sharing', import.meta.url));
 const PRIMARY_WORKSPACE = `Dogfood Integration Test — ${randomUUID().slice(0, 8)}`;
-
-interface IngestOutcome {
-  entry: ManifestEntry;
-  documentId: string;
-  blobKey: string;
-  chunkCount: number;
-  failed: boolean;
-  error?: string;
-}
-
-/**
- * Ingest one manifest entry into `workspaceId`, mirroring activities.ts's
- * orchestration (agent_run + one agent_step per phase, attempt=1 since
- * there's no Temporal retry loop here) but calling the pipeline directly.
- */
-async function ingestEntryDirect(
-  deps: IngestionDeps,
-  entry: ManifestEntry,
-  workspaceId: string,
-): Promise<IngestOutcome> {
-  const filePath = join(CORPUS_DIR, entry.path);
-  const bytes = await readFile(filePath);
-  const checksum = createHash('sha256').update(bytes).digest('hex');
-  const blobKey = `${workspaceId}/${checksum}-${entry.docId}`;
-  const { uri } = await deps.blob.put(blobKey, bytes, inferContentType(filePath));
-
-  const existing = await findEvidenceDocumentByChecksum(deps.db, workspaceId, checksum);
-  const document =
-    existing ??
-    (await createEvidenceDocument(deps.db, {
-      workspaceId,
-      sourceType: entry.sourceType as EvidenceSourceType,
-      title: entry.docId,
-      blobUri: uri,
-      checksum,
-    }));
-
-  const run = await createAgentRun(deps.db, {
-    workspaceId,
-    kind: 'ingestion',
-    subjectId: document.id,
-  });
-
-  async function step(ord: number, type: string, fn: () => Promise<number>): Promise<number> {
-    const s = await appendAgentStep(deps.db, { runId: run.id, ord, type, attempt: 1 });
-    try {
-      const count = await fn();
-      await updateAgentStep(deps.db, s.id, {
-        status: 'completed' as AgentStepStatus,
-        outputSummary: String(count),
-      });
-      return count;
-    } catch (error) {
-      await updateAgentStep(deps.db, s.id, {
-        status: 'failed' as AgentStepStatus,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-  }
-
-  try {
-    await updateDocumentStatus(deps.db, document.id, 'chunking');
-    await step(0, 'extractAndChunk', () => pipeline.extractAndChunk(deps, document.id));
-    await updateDocumentStatus(deps.db, document.id, 'embedding');
-    await step(1, 'embedChunks', () => pipeline.embedChunks(deps, document.id));
-    await updateDocumentStatus(deps.db, document.id, 'indexing');
-    const chunkCount = await step(2, 'indexChunks', () => pipeline.indexChunks(deps, document.id));
-    await updateDocumentStatus(deps.db, document.id, 'ready');
-    await updateAgentRunStatus(deps.db, run.id, 'completed', new Date());
-    return { entry, documentId: document.id, blobKey, chunkCount, failed: false };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await updateDocumentStatus(deps.db, document.id, 'failed', message);
-    await updateAgentRunStatus(deps.db, run.id, 'failed', new Date());
-    return { entry, documentId: document.id, blobKey, chunkCount: 0, failed: true, error: message };
-  }
-}
 
 /** Labeled queries across the corpus's major themes, per doc_id in manifest.csv. */
 const LABELED_QUERIES: { theme: string; query: string; expectedDocIds: string[] }[] = [
