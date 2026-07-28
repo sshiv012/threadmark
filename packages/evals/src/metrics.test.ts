@@ -51,14 +51,29 @@ describe('precisionAtK', () => {
     expect(precisionAtK(['g1', 'g3'], relevanceById, 2)).toBe(1.0);
   });
 
-  it('de-duplicates ids within rankedIds by first occurrence before scoring', () => {
+  it('a repeated relevant id only earns credit on its first occurrence', () => {
     const relevanceById = new Map([
       ['a', 1],
       ['b', 0],
     ]);
-    // Without dedup, top-2 of ['a','a','b'] would be ['a','a'] -> 2/2=1.0.
-    // With dedup-by-first-occurrence, top-2 becomes ['a','b'] -> 1/2=0.5.
+    // Repeats are zero-gain IN PLACE, not removed: effective relevances for
+    // ['a','a','b'] are [1, 0, 0] (2nd 'a' earns nothing). Top-2 -> [1,0] ->
+    // 1 relevant / k=2 = 0.5 — the naive "count occurrences" answer (2/2=1.0)
+    // would let a duplicated relevant id inflate its own score.
     expect(precisionAtK(['a', 'a', 'b'], relevanceById, 2)).toBeCloseTo(0.5, 6);
+  });
+
+  it('a duplicate does NOT promote a later relevant id past the k cutoff (regression)', () => {
+    // [dup, dup, relevant] — if duplicates were removed before slicing (the
+    // original, buggy implementation), the list would shrink to
+    // [dup, relevant] and 'relevant' would be incorrectly scored as rank 2,
+    // inside a k=2 cutoff. Repeats must be zero-gain IN PLACE instead, so
+    // 'relevant' stays at its true rank 3, outside top-2 -> precision@2 = 0.
+    const relevanceById = new Map([
+      ['dup', 0],
+      ['relevant', 1],
+    ]);
+    expect(precisionAtK(['dup', 'dup', 'relevant'], relevanceById, 2)).toBe(0);
   });
 
   it.each([0, -1])('throws for k=%d rather than computing off a raw negative-index slice', (k) => {
@@ -127,6 +142,19 @@ describe('reciprocalRank', () => {
 
   it('mixed fixture: first relevant (d1) at rank 1 gives RR=1.0', () => {
     expect(reciprocalRank(MIXED_RANKED, MIXED)).toBe(1.0);
+  });
+
+  it('a duplicate above the relevant id does NOT promote it — RR=1/3, not 1/2 (regression)', () => {
+    // The reviewer's exact example: [x, x, relevant]. Removing duplicates
+    // before scoring (the original bug) shrinks this to [x, relevant],
+    // scoring 'relevant' as rank 2 (RR=1/2). Correct behavior treats the
+    // repeat as a zero-gain slot in place, leaving 'relevant' at its true
+    // rank 3 (RR=1/3).
+    const relevanceById = new Map([
+      ['x', 0],
+      ['relevant', 2],
+    ]);
+    expect(reciprocalRank(['x', 'x', 'relevant'], relevanceById)).toBeCloseTo(1 / 3, 6);
   });
 });
 
@@ -197,6 +225,18 @@ describe('ndcgAtK', () => {
       ),
     ).toBe(0);
     expect(ndcgAtK(['a', 'b'], new Map(), 2)).toBe(0);
+  });
+
+  it('a duplicate does NOT promote a below-cutoff relevant id into the nDCG@k window (regression)', () => {
+    // 'relevant' sits at true rank 3, outside a k=2 cutoff. Removing the
+    // duplicate before scoring (the original bug) would pull it into rank 2
+    // and give it nDCG credit it never earned; treating the repeat as an
+    // in-place zero-gain slot correctly keeps it out of the top-2 window.
+    const relevanceById = new Map([
+      ['x', 0],
+      ['relevant', 3],
+    ]);
+    expect(ndcgAtK(['x', 'x', 'relevant'], relevanceById, 2)).toBe(0);
   });
 
   it.each([0, -1])('throws for k=%d', (k) => {

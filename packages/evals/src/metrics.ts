@@ -18,8 +18,16 @@
  * - `k` must be a positive integer; k<=0 throws rather than computing off a
  *   raw `Array.slice(0,k)` (negative k drops from the END in JS, not an
  *   empty prefix — a real landmine if left unvalidated).
- * - Duplicate ids within `rankedIds` are de-duplicated by first occurrence
- *   before scoring, so a misbehaving retriever can't inflate its own score.
+ * - A repeated id within `rankedIds` never earns credit past its FIRST
+ *   occurrence, but — critically — repeats are NOT removed from the list
+ *   before applying the k cutoff. Removing them first would shrink the list
+ *   and promote later, genuinely-lower-ranked results into better rank
+ *   slots than they earned (e.g. [dup, dup, relevant] with the dup at rank
+ *   1-2 would incorrectly score `relevant` as if it were rank 2, not its
+ *   true rank 3, inflating precision/recall/MRR/nDCG in the process — the
+ *   opposite of the "can't inflate its own score" goal). Repeats are instead
+ *   treated as a zero-gain slot IN PLACE, preserving every other id's true
+ *   rank position.
  */
 
 function validateK(k: number): void {
@@ -28,19 +36,19 @@ function validateK(k: number): void {
   }
 }
 
-function dedupeFirstOccurrence(ids: string[]): string[] {
+/**
+ * Per-position relevance for scoring: the real graded relevance for an id's
+ * first occurrence, 0 for every occurrence after that, and 0 for an id
+ * absent from `relevanceById` — same length and order as `rankedIds`, so no
+ * rank position is ever shifted or removed.
+ */
+function effectiveRelevances(rankedIds: string[], relevanceById: Map<string, number>): number[] {
   const seen = new Set<string>();
-  const result: string[] = [];
-  for (const id of ids) {
-    if (seen.has(id)) continue;
+  return rankedIds.map((id) => {
+    if (seen.has(id)) return 0;
     seen.add(id);
-    result.push(id);
-  }
-  return result;
-}
-
-function isRelevant(id: string, relevanceById: Map<string, number>): boolean {
-  return (relevanceById.get(id) ?? 0) > 0;
+    return relevanceById.get(id) ?? 0;
+  });
 }
 
 export function precisionAtK(
@@ -49,8 +57,8 @@ export function precisionAtK(
   k: number,
 ): number {
   validateK(k);
-  const top = dedupeFirstOccurrence(rankedIds).slice(0, k);
-  const relevantCount = top.filter((id) => isRelevant(id, relevanceById)).length;
+  const top = effectiveRelevances(rankedIds, relevanceById).slice(0, k);
+  const relevantCount = top.filter((rel) => rel > 0).length;
   return relevantCount / k;
 }
 
@@ -62,14 +70,14 @@ export function recallAtK(
   validateK(k);
   const totalPositives = [...relevanceById.values()].filter((rel) => rel > 0).length;
   if (totalPositives === 0) return 0;
-  const top = dedupeFirstOccurrence(rankedIds).slice(0, k);
-  const hits = top.filter((id) => isRelevant(id, relevanceById)).length;
+  const top = effectiveRelevances(rankedIds, relevanceById).slice(0, k);
+  const hits = top.filter((rel) => rel > 0).length;
   return hits / totalPositives;
 }
 
 export function reciprocalRank(rankedIds: string[], relevanceById: Map<string, number>): number {
-  const deduped = dedupeFirstOccurrence(rankedIds);
-  const rank = deduped.findIndex((id) => isRelevant(id, relevanceById));
+  const relevances = effectiveRelevances(rankedIds, relevanceById);
+  const rank = relevances.findIndex((rel) => rel > 0);
   return rank === -1 ? 0 : 1 / (rank + 1);
 }
 
@@ -87,8 +95,8 @@ export function ndcgAtK(
   k: number,
 ): number {
   validateK(k);
-  const top = dedupeFirstOccurrence(rankedIds).slice(0, k);
-  const dcg = discountedGainSum(top.map((id) => relevanceById.get(id) ?? 0));
+  const top = effectiveRelevances(rankedIds, relevanceById).slice(0, k);
+  const dcg = discountedGainSum(top);
 
   const idealRelevances = [...relevanceById.values()].sort((a, b) => b - a).slice(0, k);
   const idcg = discountedGainSum(idealRelevances);
