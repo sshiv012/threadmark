@@ -1,7 +1,9 @@
 /**
- * @threadmark/core — domain types, Zod schemas, and service interfaces.
- *
- * Placeholder export for the scaffold. Real domain entities and service
- * interfaces land in later PRs (DB schema, model-router, retrieval).
+ * @threadmark/core — domain types and the RBAC policy keystone. `Principal`
+ * (human | agent-persona) + `can(principal, action, resource)` are the single
+ * source of truth every auth boundary (apps/api, packages/agent) consumes.
  */
 export const PACKAGE_NAME = '@threadmark/core';
+
+export * from './types.js';
+export * from './policy.js';
