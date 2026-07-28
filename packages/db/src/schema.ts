@@ -32,6 +32,13 @@ export const EMBEDDING_DIMENSIONS = 384;
 // ── Enums ────────────────────────────────────────────────────────────────────
 export const membershipRole = pgEnum('membership_role', ['owner', 'editor', 'commenter', 'viewer']);
 
+// 'pending' = access requested but not yet granted; 'active' = usable for
+// login/RBAC. SQL-level default is 'active' (not 'pending') so this column's
+// addition never retroactively locks out a membership row created by the
+// pre-existing addMembership() — only the new access-request path explicitly
+// passes 'pending' at the application layer.
+export const membershipStatus = pgEnum('membership_status', ['pending', 'active']);
+
 export const documentStatus = pgEnum('document_status', [
   'queued',
   'extracting',
@@ -94,6 +101,7 @@ export const memberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     role: membershipRole('role').notNull(),
+    status: membershipStatus('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('memberships_workspace_user_uniq').on(table.workspaceId, table.userId)],
@@ -273,6 +281,7 @@ export type EvalReport = typeof evalReports.$inferSelect;
 export type NewEvalReport = typeof evalReports.$inferInsert;
 
 export type MembershipRole = (typeof membershipRole.enumValues)[number];
+export type MembershipStatus = (typeof membershipStatus.enumValues)[number];
 export type DocumentStatus = (typeof documentStatus.enumValues)[number];
 export type EvidenceSourceType = (typeof evidenceSourceType.enumValues)[number];
 export type AgentRunKind = (typeof agentRunKind.enumValues)[number];
