@@ -13,7 +13,7 @@
  *
  * NOTE: real embedding/rerank calls routinely take 6-12s locally, and this
  * suite scores the FULL labeled set (23 queries) across all 4 configs in one
- * test — the test:eval scripts bake in `--testTimeout=300000` (5 min) —
+ * test — the test:eval scripts bake in `--testTimeout=600000` (10 min) —
  * always run it that way, not a bare `vitest run`.
  */
 import {
@@ -104,5 +104,5 @@ describe.skipIf(!runEvalIntegration)('eval integration (real services, real mode
     const lexical = results.find((r) => r.configName === 'lexical_only')!;
     const hybridRerank = results.find((r) => r.configName === 'hybrid_rerank')!;
     expect(hybridRerank.mean.ndcgAtK).toBeGreaterThanOrEqual(lexical.mean.ndcgAtK);
-  }, 300_000);
+  }, 600_000);
 });

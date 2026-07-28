@@ -240,7 +240,7 @@ describe('runEval', () => {
     expect(result!.perQuery[0]!.ndcgAtK).toBe(0);
   });
 
-  it('skips a query whose arm computation throws and continues the run', async () => {
+  it('throws rather than silently returning a config missing a query (review regression)', async () => {
     const { workspaceId, docTitle } = await seedWorkspace('partial-failure', [
       { key: 'a', text: 'dashboard sharing content one' },
       { key: 'b', text: 'dashboard sharing content two' },
@@ -270,9 +270,51 @@ describe('runEval', () => {
       ]),
     ];
 
-    const [result] = await runEval(flakyDeps, workspaceId, queries, ['hybrid_rerank'], 8, 30);
-    expect(result!.perQuery.length).toBeLessThan(3);
-    expect(result!.perQuery.some((q) => q.externalId === 'q2')).toBe(false);
+    await expect(
+      runEval(flakyDeps, workspaceId, queries, ['hybrid_rerank'], 8, 30),
+    ).rejects.toThrow(/not every config scored every query/i);
+  });
+
+  it('a partial arm failure cannot produce a passing regression comparison (review regression)', async () => {
+    // The exact scenario the review flagged: one config (hybrid_rerank)
+    // fails a query that another config (lexical_only) succeeds on. Before
+    // the fix, runEval would silently return both ArmResults with
+    // MISMATCHED perQuery sets, and a caller comparing
+    // hybridRerank.mean.ndcgAtK >= lexical.mean.ndcgAtK could pass on an
+    // invalid (different-sample) comparison — or trivially pass if every
+    // query failed for one arm, since an empty perQuery means mean=0 and
+    // 0>=0 is vacuously true. The fix makes runEval itself throw before any
+    // such comparison is ever evaluated.
+    const { workspaceId, docTitle } = await seedWorkspace('partial-failure-cross-config', [
+      { key: 'a', text: 'dashboard sharing content one' },
+      { key: 'b', text: 'dashboard sharing content two' },
+    ]);
+    let rerankCalls = 0;
+    const flakyRouter: ModelRouter = {
+      ...router,
+      rerank: (request) => {
+        rerankCalls += 1;
+        // Fail hybrid_rerank's SECOND query only — lexical_only never calls
+        // rerank at all, so it succeeds on both queries unaffected.
+        if (rerankCalls === 2) throw new Error('simulated rerank failure');
+        return router.rerank(request);
+      },
+    };
+    const flakyRetriever = createRetriever({ db, search, router: flakyRouter });
+    const flakyDeps: ArmDeps = { db, search, router: flakyRouter, retriever: flakyRetriever };
+
+    const queries = [
+      makeQuery('q1', 'dashboard sharing content one', [
+        judgment({ docId: docTitle, chunkSourceKey: 'a', relevance: 2 }),
+      ]),
+      makeQuery('q2', 'dashboard sharing content two', [
+        judgment({ docId: docTitle, chunkSourceKey: 'b', relevance: 2 }),
+      ]),
+    ];
+
+    await expect(
+      runEval(flakyDeps, workspaceId, queries, ['lexical_only', 'hybrid_rerank'], 8, 30),
+    ).rejects.toThrow(/hybrid_rerank missing \[q2\]/);
   });
 
   it('mean.mrr is the average of reciprocalRank, not precision/recall/ndcg', async () => {

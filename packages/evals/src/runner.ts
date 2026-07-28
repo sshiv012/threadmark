@@ -85,10 +85,15 @@ function computeMean(perQuery: QueryScore[]): ArmMeans {
 /**
  * Runs every `configNames` arm over every query in `queries`, scoring each
  * against its own labeled judgments. A query whose arm computation throws
- * (e.g. a transient rerank error) is skipped — logged, not fatal — and the
- * run continues with the rest: this is a human-driven tuning tool, not a
- * production request path, so one flaky query shouldn't discard every other
- * valid score in the same run.
+ * (e.g. a transient rerank error) is logged and skipped WITHIN that config's
+ * loop, so one failure doesn't stop the run from surfacing every other
+ * failure in the same pass — but the run only RETURNS successfully if every
+ * config ended up scoring the exact same set of queries. If any config is
+ * missing a query another config scored, `runEval` throws instead of
+ * returning partial results: comparing means computed over different
+ * samples is invalid (a hard-to-diagnose false pass/fail), and if every
+ * query failed for one config its mean would default to 0 and could make a
+ * regression comparison pass vacuously against a broken arm.
  */
 export async function runEval(
   armDeps: ArmDeps,
@@ -98,7 +103,10 @@ export async function runEval(
   topK: number,
   candidateK: number,
 ): Promise<ArmResult[]> {
+  const expectedExternalIds = new Set(queries.map((q) => q.query.externalId));
   const results: ArmResult[] = [];
+  const missingByConfig = new Map<ArmName, string[]>();
+
   for (const configName of configNames) {
     const perQuery: QueryScore[] = [];
     for (const { query, judgments } of queries) {
@@ -121,12 +129,28 @@ export async function runEval(
         });
       } catch (error) {
         console.warn(
-          `[evals] skipping query "${query.externalId}" for config "${configName}":`,
+          `[evals] query "${query.externalId}" failed for config "${configName}":`,
           error,
         );
       }
     }
+
+    const scoredIds = new Set(perQuery.map((q) => q.externalId));
+    const missing = [...expectedExternalIds].filter((id) => !scoredIds.has(id));
+    if (missing.length > 0) missingByConfig.set(configName, missing);
+
     results.push({ configName, mean: computeMean(perQuery), perQuery });
   }
+
+  if (missingByConfig.size > 0) {
+    const details = [...missingByConfig.entries()]
+      .map(([configName, missing]) => `${configName} missing [${missing.join(', ')}]`)
+      .join('; ');
+    throw new Error(
+      `runEval: not every config scored every query — comparing means across mismatched ` +
+        `samples would be invalid. ${details}`,
+    );
+  }
+
   return results;
 }
