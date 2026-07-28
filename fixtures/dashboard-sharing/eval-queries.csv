@@ -1,0 +1,60 @@
+external_id,query,doc_id,snippet,relevance,notes
+link-expiry-default,why did our shared dashboard link expire after 24 hours,ticket-1042-link-expired-too-soon,external sharing links currently default to a 24-hour expiry as a safety measure,3,primary
+link-expiry-default,why did our shared dashboard link expire after 24 hours,link-settings-expiry-and-revoke,the link stops working at that moment,2,secondary
+embed-links-history,why did we shut down the old public embed links feature,prd-public-embeds-retro,anyone with the URL saw a snapshot-rendered dashboard,3,primary
+embed-links-history,why did we shut down the old public embed links feature,prd-internal-dashboards-v1,External sharing of dashboards is out of scope,1,historical context
+self-serve-secure-link,customer wants a self-serve share link with expiry and revoke,interview-northwind-dana,provision seats for every client contact,3,primary
+self-serve-secure-link,customer wants a self-serve share link with expiry and revoke,sharing-a-dashboard,Viewers cannot generate share links,2,secondary
+instant-revoke,how fast can we revoke an external dashboard share,ticket-1078-revoke-access-request,Revocation takes effect within seconds: the next request is rejected,3,primary
+instant-revoke,how fast can we revoke an external dashboard share,link-settings-expiry-and-revoke,Revoking permanently disables a link,2,secondary
+instant-revoke,how fast can we revoke an external dashboard share,interview-northwind-raj,A single "manage shares" screen per dashboard,1,supporting
+manage-all-shares,give support a way to see and revoke every active share link,interview-northwind-raj,I need to be able to do it on behalf of a user,3,primary
+manage-all-shares,give support a way to see and revoke every active share link,ticket-1078-revoke-access-request,every share event is captured in the Audit Log,2,secondary
+manage-all-shares,give support a way to see and revoke every active share link,link-settings-expiry-and-revoke,Threadmark does not currently support converting an existing shared link into per-recipient links after the fact,1,known gap
+sso-required-external,can we require SSO for external dashboard viewers,ticket-1105-external-viewer-sso-required,Can external sharing require the viewer to authenticate,3,primary
+sso-required-external,can we require SSO for external dashboard viewers,security-and-compliance,SSO-verified access is the only mode that reliably attributes activity to a real person,2,secondary
+sso-required-external,can we require SSO for external dashboard viewers,auth-and-data-isolation,require the viewer to authenticate via their own IdP,2,secondary
+sso-required-external,can we require SSO for external dashboard viewers,interview-helio-tom,SSO federation to their identity provider ideally,1,supporting
+watermark-effectiveness,does watermarking actually stop screenshots from leaking,security-and-compliance,deters casual screenshotting and re-sharing and helps trace a leaked export,3,primary
+watermark-effectiveness,does watermarking actually stop screenshots from leaking,interview-helio-tom,It's a deterrent and an attribution aid,2,secondary
+watermark-effectiveness,does watermarking actually stop screenshots from leaking,compliance-audit-and-pii,Watermarking is a deterrent and an attribution tool for leaked screenshots,2,secondary
+mobile-slow-loading,shared dashboard is extremely slow loading on mobile,ticket-1130-shared-dashboard-slow-mobile,The shared dashboard has 11 widgets and two of them are high-cardinality tables,3,primary
+mobile-slow-loading,shared dashboard is extremely slow loading on mobile,performance-and-caching,Time to first meaningful paint of a shared dashboard,2,secondary
+mobile-slow-loading,shared dashboard is extremely slow loading on mobile,troubleshooting-shared-dashboards,Widgets reflow into a single column on narrow screens,1,secondary
+viewer-vs-editor-roles,what is the difference between viewer and editor permissions on a dashboard,managing-permissions,a Project Admin is effectively an Editor on every dashboard in the project,3,primary
+viewer-vs-editor-roles,what is the difference between viewer and editor permissions on a dashboard,prd-internal-dashboards-v1,Viewers may open dashboards shared with them but may not edit widget definitions,1,secondary
+partner-embed-request,can partners embed our dashboard directly into their own portal,feature-requests,Embed shared dashboards in external portals via iframe,3,primary
+partner-embed-request,can partners embed our dashboard directly into their own portal,interview-northwind-dana,Some customers have their own internal portals and would love to drop our chart in,1,supporting
+partner-embed-request,can partners embed our dashboard directly into their own portal,prd-public-embeds-retro,rendered a single dashboard as a standalone public web page,2,secondary
+custom-branding-request,customers want custom branding on the external share landing page,feature-requests,Custom branding on external share landing page,3,primary
+custom-branding-request,customers want custom branding on the external share landing page,sharing-a-dashboard,External viewers open the link in any modern browser without a Threadmark account,2,secondary
+password-protect-link,can we require a password on an external dashboard link,link-settings-expiry-and-revoke,Passwords are stored hashed; Threadmark cannot show you an existing password,3,primary
+password-protect-link,can we require a password on an external dashboard link,feature-requests,Password-protect a shared dashboard link,2,secondary
+password-protect-link,can we require a password on an external dashboard link,troubleshooting-shared-dashboards,editors can change it at any time,1,secondary
+snapshot-vs-live-data,does the shared dashboard show live data or a frozen snapshot,sharing-a-dashboard,Snapshots are recommended when sharing with parties who should not see subsequent updates,3,primary
+snapshot-vs-live-data,does the shared dashboard show live data or a frozen snapshot,prd-public-embeds-retro,the public link kept rendering fresh data,2,secondary
+snapshot-vs-live-data,does the shared dashboard show live data or a frozen snapshot,troubleshooting-shared-dashboards,ask the editor to switch the link to a snapshot,1,secondary
+data-residency-eu,does shared dashboard data stay in the EU region,security-and-compliance,an EU-resident workspace keeps its data in the EU even when shared with a US recipient,3,primary
+data-residency-eu,does shared dashboard data stay in the EU region,compliance-audit-and-pii,Some tenants are contractually bound to a region,2,secondary
+data-residency-eu,does shared dashboard data stay in the EU region,performance-and-caching,how does that interact with data-residency constraints in the compliance note,1,secondary
+rate-limit-scraping,how do we stop a leaked link from being scraped at scale,performance-and-caching,"Rate limiting serves both abuse prevention (enumeration, scraping) and load protection",3,primary
+rate-limit-scraping,how do we stop a leaked link from being scraped at scale,interview-helio-tom,I'd want a penetration test focused specifically on the sharing surface before I sign off,2,secondary
+rate-limit-scraping,how do we stop a leaked link from being scraped at scale,auth-and-data-isolation,must be rate-limited per IP and per slug prefix to defeat brute-force scanning,2,secondary
+siem-streaming,can we stream the external sharing audit log into our SIEM,interview-helio-tom,I can't stream these events into our own monitoring,3,primary
+siem-streaming,can we stream the external sharing audit log into our SIEM,security-and-compliance,can be streamed to an external SIEM via the Audit Streaming API on Enterprise,2,secondary
+siem-streaming,can we stream the external sharing audit log into our SIEM,compliance-audit-and-pii,exporting logs to a customer's SIEM,1,secondary
+gdpr-erasure,how do we handle a GDPR right to erasure request touching audit logs,compliance-audit-and-pii,Right-to-erasure requests must be able to reach viewer metadata in audit logs,3,primary
+gdpr-erasure,how do we handle a GDPR right to erasure request touching audit logs,interview-helio-tom,Our dashboards can contain personal data,2,secondary
+gdpr-erasure,how do we handle a GDPR right to erasure request touching audit logs,ticket-1105-external-viewer-sso-required,verifiable access for GDPR reasons,1,secondary
+tenant-isolation-scoping,how do we make sure one partner never sees another partner's data in a shared dashboard,interview-helio-marta,Partner A must never see Partner B's shipments,3,primary
+tenant-isolation-scoping,how do we make sure one partner never sees another partner's data in a shared dashboard,auth-and-data-isolation,Every query that serves a shared dashboard must be scoped by,2,secondary
+security-admin-policy,security wants an admin policy for what sharing methods are allowed,interview-helio-tom,Security wants to set the guardrails once and have them enforced for every user,3,primary
+security-admin-policy,security wants an admin policy for what sharing methods are allowed,auth-and-data-isolation,Maximum lifetime is 30 days; default 7 days,2,secondary
+nonprofit-simple-sharing,small nonprofit wants simple aggregate-only sharing without exposing personal data,interview-brightseed-aisha,I would never want a funder to see individual personal information,3,primary
+nonprofit-simple-sharing,small nonprofit wants simple aggregate-only sharing without exposing personal data,feature-requests,View-only mode that disables copy and export on shares,1,secondary
+dashboards-v1-scope-history,why wasn't external sharing available in the original internal dashboards product,prd-internal-dashboards-v1,the per-PRD permission checks that make it safe no longer apply,3,primary
+dashboards-v1-scope-history,why wasn't external sharing available in the original internal dashboards product,prd-public-embeds-retro,the demand it answered is real,1,secondary
+support-ticket-volume-trend,how many tickets do we get about external sharing each quarter,support-volume-by-topic,topic_id: SV-3022,3,primary
+support-ticket-volume-trend,how many tickets do we get about external sharing each quarter,feature-requests,Secure external links for read-only dashboard sharing,1,secondary
+mobile-usage-trend,how much has mobile viewing grown for shared dashboards,dashboard-usage,metric_id: DU-2037,3,primary
+mobile-usage-trend,how much has mobile viewing grown for shared dashboards,ticket-1130-shared-dashboard-slow-mobile,Client is on the road a lot so mobile matters,1,secondary

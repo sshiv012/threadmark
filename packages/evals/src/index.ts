@@ -5,5 +5,7 @@
  */
 export const PACKAGE_NAME = '@threadmark/evals';
 
+export * from './arms.js';
 export * from './fixtures.js';
 export * from './metrics.js';
+export * from './runner.js';

@@ -9,9 +9,11 @@
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",
     "test:dogfood": "RUN_DOGFOOD_INTEGRATION=1 vitest run src/dogfood.integration.test.ts --testTimeout=60000",
+    "test:eval": "RUN_EVAL_INTEGRATION=1 vitest run src/eval.integration.test.ts --testTimeout=600000",
     "worker": "node --env-file=../../.env dist/worker.js",
     "ingest": "node --env-file=../../.env dist/cli/ingest.js",
     "seed": "node --env-file=../../.env dist/cli/seed.js",
+    "eval:seed": "node --env-file=../../.env dist/cli/eval-seed.js",
     "retrieve": "node --env-file=../../.env dist/cli/retrieve.js"
   },
   "dependencies": {
@@ -22,6 +24,7 @@
     "@threadmark/blob": "workspace:^",
     "@threadmark/chunking": "workspace:^",
     "@threadmark/db": "workspace:^",
+    "@threadmark/evals": "workspace:^",
     "@threadmark/model-router": "workspace:^",
     "@threadmark/retrieval": "workspace:^",
     "@threadmark/search": "workspace:^",
