@@ -1,5 +1,5 @@
 {
-  "id": "b5ed7e18-8ca7-4eb7-950a-9bf8f87c2cd5",
+  "id": "f73776ca-8629-406a-a03e-10eb46b7c6bd",
   "prevId": "637ffde3-cbb2-423e-9389-5174fca23352",
   "version": "7",
   "dialect": "postgresql",
@@ -744,7 +744,7 @@
           "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
-          "default": "'active'"
+          "default": "'pending'"
         },
         "created_at": {
           "name": "created_at",

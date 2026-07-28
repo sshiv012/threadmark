@@ -7,7 +7,7 @@ import * as schema from '@threadmark/db';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 
 const migrationsFolder = fileURLToPath(
@@ -15,13 +15,18 @@ const migrationsFolder = fileURLToPath(
 );
 
 let db: Database;
+let pglite: PGlite;
 
 beforeEach(async () => {
   process.env.JWT_SECRET = 'test-secret-value';
-  const pg = new PGlite({ extensions: { vector } });
-  const pgliteDb = drizzle(pg, { schema });
+  pglite = new PGlite({ extensions: { vector } });
+  const pgliteDb = drizzle(pglite, { schema });
   await migrate(pgliteDb, { migrationsFolder });
   db = pgliteDb as unknown as Database;
+});
+
+afterEach(async () => {
+  await pglite.close();
 });
 
 async function post(app: ReturnType<typeof buildApp>, payload: Record<string, unknown>) {

@@ -83,6 +83,16 @@ describe('migration + core entities', () => {
     expect(members[0]).toMatchObject({ role: 'owner' });
   });
 
+  it('defaults status to pending (fail-closed) when a caller omits it entirely (review regression)', async () => {
+    const { workspace, user } = await seedWorkspaceAndUser();
+    const membership = await addMembership(db, {
+      workspaceId: workspace.id,
+      userId: user.id,
+      role: 'owner',
+    });
+    expect(membership.status).toBe('pending');
+  });
+
   it('rejects a duplicate membership for the same (workspace, user)', async () => {
     const { workspace, user } = await seedWorkspaceAndUser();
     await addMembership(db, { workspaceId: workspace.id, userId: user.id, role: 'editor' });

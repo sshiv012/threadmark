@@ -6,7 +6,7 @@ import type { Database } from '@threadmark/db';
 import * as schema from '@threadmark/db';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../app.js';
 import { verifyToken } from '../auth/jwt.js';
 
@@ -15,13 +15,18 @@ const migrationsFolder = fileURLToPath(
 );
 
 let db: Database;
+let pglite: PGlite;
 
 beforeEach(async () => {
   process.env.JWT_SECRET = 'test-secret-value';
-  const pg = new PGlite({ extensions: { vector } });
-  const pgliteDb = drizzle(pg, { schema });
+  pglite = new PGlite({ extensions: { vector } });
+  const pgliteDb = drizzle(pglite, { schema });
   await migrate(pgliteDb, { migrationsFolder });
   db = pgliteDb as unknown as Database;
+});
+
+afterEach(async () => {
+  await pglite.close();
 });
 
 async function login(app: ReturnType<typeof buildApp>, email: string) {
@@ -99,6 +104,29 @@ describe('POST /login', () => {
     expect(unknownResponse.statusCode).toBe(403);
     expect(pendingOnlyResponse.statusCode).toBe(403);
     expect(unknownResponse.body).toBe(pendingOnlyResponse.body);
+  });
+
+  it('runs the same number of DB queries for an unknown email as for a known-but-pending email (timing side-channel regression)', async () => {
+    const workspace = await createWorkspace(db, { name: 'Acme' });
+    const user = await createUser(db, { email: 'pending-timing@acme.test', name: 'Pending' });
+    await addMembership(db, {
+      workspaceId: workspace.id,
+      userId: user.id,
+      role: 'viewer',
+      status: 'pending',
+    });
+    const app = buildApp({ db });
+    const selectSpy = vi.spyOn(db, 'select');
+
+    selectSpy.mockClear();
+    await login(app, 'totally-unknown-timing@acme.test');
+    const unknownQueryCount = selectSpy.mock.calls.length;
+
+    selectSpy.mockClear();
+    await login(app, 'pending-timing@acme.test');
+    const pendingQueryCount = selectSpy.mock.calls.length;
+
+    expect(unknownQueryCount).toBe(pendingQueryCount);
   });
 
   it('calling /login twice for the same active user succeeds twice and mutates no membership rows', async () => {

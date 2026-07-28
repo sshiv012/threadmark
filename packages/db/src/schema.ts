@@ -33,10 +33,11 @@ export const EMBEDDING_DIMENSIONS = 384;
 export const membershipRole = pgEnum('membership_role', ['owner', 'editor', 'commenter', 'viewer']);
 
 // 'pending' = access requested but not yet granted; 'active' = usable for
-// login/RBAC. SQL-level default is 'active' (not 'pending') so this column's
-// addition never retroactively locks out a membership row created by the
-// pre-existing addMembership() — only the new access-request path explicitly
-// passes 'pending' at the application layer.
+// login/RBAC. SQL-level default is 'pending' — fail-closed — so a future
+// insert path that forgets to set status explicitly never silently grants
+// access. The migration backfills every pre-existing row to 'active'
+// (created via the old addMembership(), which always meant "already
+// granted"); only the new access-request path relies on the pending default.
 export const membershipStatus = pgEnum('membership_status', ['pending', 'active']);
 
 export const documentStatus = pgEnum('document_status', [
@@ -101,7 +102,7 @@ export const memberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     role: membershipRole('role').notNull(),
-    status: membershipStatus('status').notNull().default('active'),
+    status: membershipStatus('status').notNull().default('pending'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('memberships_workspace_user_uniq').on(table.workspaceId, table.userId)],

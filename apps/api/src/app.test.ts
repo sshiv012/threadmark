@@ -5,19 +5,28 @@ import type { Database } from '@threadmark/db';
 import * as schema from '@threadmark/db';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
 
 const migrationsFolder = fileURLToPath(new URL('../../../packages/db/migrations', import.meta.url));
 
 let db: Database;
+let pglite: PGlite;
 
 beforeEach(async () => {
   process.env.JWT_SECRET = 'test-secret-value';
-  const pg = new PGlite({ extensions: { vector } });
-  const pgliteDb = drizzle(pg, { schema });
+  pglite = new PGlite({ extensions: { vector } });
+  const pgliteDb = drizzle(pglite, { schema });
   await migrate(pgliteDb, { migrationsFolder });
   db = pgliteDb as unknown as Database;
+});
+
+// Each test spins up a fresh in-process Postgres; without closing it, a full
+// suite run accumulates open PGlite instances across every it() block and
+// every test file, which was timing out CI (each instance holds real
+// memory/file-descriptor-like resources even though it's in-process).
+afterEach(async () => {
+  await pglite.close();
 });
 
 describe('buildApp', () => {
