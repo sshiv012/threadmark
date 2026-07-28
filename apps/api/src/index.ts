@@ -3,7 +3,33 @@
  * validation (Zod), starting/signaling Temporal workflows, and serving reads.
  * Owns no long-running logic.
  *
- * Placeholder for the scaffold. The upload endpoint + workflow triggers land
- * in PR5.
+ * Run (after build): `node --env-file=.env apps/api/dist/index.js`
  */
+import { createDb } from '@threadmark/db';
+import { initTelemetry } from '@threadmark/telemetry';
+import { buildApp } from './app.js';
+import { env } from './env.js';
+
 export const APP_NAME = '@threadmark/api';
+
+async function main(): Promise<void> {
+  const shutdownTelemetry = initTelemetry('threadmark-api');
+  const { db, close } = createDb(env.databaseUrl);
+  const app = buildApp({ db });
+
+  const shutdown = async (): Promise<void> => {
+    await app.close();
+    await close();
+    await shutdownTelemetry();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
+
+  await app.listen({ port: 3001, host: '0.0.0.0' });
+}
+
+main().catch((error: unknown) => {
+  console.error(error);
+  process.exit(1);
+});

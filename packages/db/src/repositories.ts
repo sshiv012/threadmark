@@ -100,6 +100,76 @@ export async function listMemberships(db: Database, workspaceId: string): Promis
   return db.select().from(memberships).where(eq(memberships.workspaceId, workspaceId));
 }
 
+/**
+ * Find-or-create a user by email — the entry point for the access-request
+ * flow. Race-safe via `onConflictDoNothing` (not select-then-insert): under
+ * concurrent calls for the same brand-new email, exactly one insert wins and
+ * every caller ends up with the same row. `name` is only applied if a new row
+ * is created; an existing user's name is left untouched.
+ */
+export async function findOrCreateUserByEmail(
+  db: Database,
+  input: { email: string; name: string },
+): Promise<User> {
+  const [inserted] = await db
+    .insert(users)
+    .values({ email: input.email, name: input.name })
+    .onConflictDoNothing({ target: users.email })
+    .returning();
+  if (inserted) return inserted;
+  const existing = await getUserByEmail(db, input.email);
+  if (!existing) throw new Error('user insert conflicted but no existing row found');
+  return existing;
+}
+
+/**
+ * Find-or-create a PENDING, least-privileged membership for
+ * (workspaceId, userId). Race-safe via `onConflictDoNothing` against
+ * `memberships_workspace_user_uniq`. Calling this again for an
+ * already-pending OR already-active row is a no-op that returns the existing
+ * row UNCHANGED — this must never regress an active membership back to
+ * pending, or its role back to 'viewer'.
+ */
+export async function findOrCreatePendingMembership(
+  db: Database,
+  input: { workspaceId: string; userId: string },
+): Promise<Membership> {
+  const [inserted] = await db
+    .insert(memberships)
+    .values({
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      role: 'viewer',
+      status: 'pending',
+    })
+    .onConflictDoNothing({ target: [memberships.workspaceId, memberships.userId] })
+    .returning();
+  if (inserted) return inserted;
+  const [existing] = await db
+    .select()
+    .from(memberships)
+    .where(
+      and(eq(memberships.workspaceId, input.workspaceId), eq(memberships.userId, input.userId)),
+    )
+    .limit(1);
+  if (!existing) throw new Error('membership insert conflicted but no existing row found');
+  return existing;
+}
+
+/**
+ * Does this user have ANY active membership, in any workspace? The login
+ * gate — deliberately cross-workspace, since login itself has no workspace
+ * context yet.
+ */
+export async function hasAnyActiveMembership(db: Database, userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: memberships.id })
+    .from(memberships)
+    .where(and(eq(memberships.userId, userId), eq(memberships.status, 'active')))
+    .limit(1);
+  return row !== undefined;
+}
+
 // ── Evidence documents ───────────────────────────────────────────────────────
 export async function createEvidenceDocument(
   db: Database,

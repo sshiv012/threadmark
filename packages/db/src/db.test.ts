@@ -18,6 +18,8 @@ import {
   deleteChunksNotIn,
   findEvidenceDocumentByChecksum,
   findEvidenceDocumentByTitle,
+  findOrCreatePendingMembership,
+  findOrCreateUserByEmail,
   findWorkspaceByName,
   getAgentRun,
   getChunksByDocument,
@@ -26,6 +28,7 @@ import {
   getUserByEmail,
   getWorkspace,
   getWorkspaceRetrievalRevision,
+  hasAnyActiveMembership,
   listAgentSteps,
   listEvalQueriesWithJudgments,
   listMemberships,
@@ -80,12 +83,181 @@ describe('migration + core entities', () => {
     expect(members[0]).toMatchObject({ role: 'owner' });
   });
 
+  it('defaults status to pending (fail-closed) when a caller omits it entirely (review regression)', async () => {
+    const { workspace, user } = await seedWorkspaceAndUser();
+    const membership = await addMembership(db, {
+      workspaceId: workspace.id,
+      userId: user.id,
+      role: 'owner',
+    });
+    expect(membership.status).toBe('pending');
+  });
+
   it('rejects a duplicate membership for the same (workspace, user)', async () => {
     const { workspace, user } = await seedWorkspaceAndUser();
     await addMembership(db, { workspaceId: workspace.id, userId: user.id, role: 'editor' });
     await expect(
       addMembership(db, { workspaceId: workspace.id, userId: user.id, role: 'viewer' }),
     ).rejects.toThrow();
+  });
+});
+
+describe('access requests: user/membership status', () => {
+  describe('findOrCreateUserByEmail', () => {
+    it('creates a new user by email when none exists', async () => {
+      const user = await findOrCreateUserByEmail(db, { email: 'new@acme.test', name: 'Newt' });
+      expect(user.email).toBe('new@acme.test');
+      expect(await getUserByEmail(db, 'new@acme.test')).toMatchObject({
+        id: user.id,
+        name: 'Newt',
+      });
+    });
+
+    it('reuses an existing user by email without overwriting their name', async () => {
+      const original = await createUser(db, { email: 'pm@acme.test', name: 'Original' });
+      const reused = await findOrCreateUserByEmail(db, {
+        email: 'pm@acme.test',
+        name: 'Attempted Overwrite',
+      });
+      expect(reused.id).toBe(original.id);
+      expect(reused.name).toBe('Original');
+    });
+
+    it('never creates a duplicate row for the same email across sequential calls', async () => {
+      await findOrCreateUserByEmail(db, { email: 'dup@acme.test', name: 'A' });
+      await findOrCreateUserByEmail(db, { email: 'dup@acme.test', name: 'B' });
+      const all = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.email, 'dup@acme.test'));
+      expect(all).toHaveLength(1);
+    });
+
+    it('does not create two rows when invoked concurrently for the same new email', async () => {
+      const [a, b] = await Promise.all([
+        findOrCreateUserByEmail(db, { email: 'concurrent@acme.test', name: 'A' }),
+        findOrCreateUserByEmail(db, { email: 'concurrent@acme.test', name: 'B' }),
+      ]);
+      expect(a.id).toBe(b.id);
+      const all = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.email, 'concurrent@acme.test'));
+      expect(all).toHaveLength(1);
+    });
+
+    it('stores an email/name containing SQL-injection-shaped characters as literal text', async () => {
+      const name = "Robert'); DROP TABLE users;--";
+      const user = await findOrCreateUserByEmail(db, { email: 'injection@acme.test', name });
+      expect((await getUserByEmail(db, 'injection@acme.test'))?.name).toBe(name);
+      expect(user.name).toBe(name);
+    });
+  });
+
+  describe('findOrCreatePendingMembership', () => {
+    it('creates a pending viewer membership when none exists', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      const membership = await findOrCreatePendingMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+      });
+      expect(membership).toMatchObject({ role: 'viewer', status: 'pending' });
+      expect(await listMemberships(db, workspace.id)).toHaveLength(1);
+    });
+
+    it('is idempotent: calling it twice for the same (workspace, user) produces exactly one row', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+      expect(await listMemberships(db, workspace.id)).toHaveLength(1);
+    });
+
+    it('returns the existing membership row (not undefined) on the second, no-op call', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      const first = await findOrCreatePendingMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+      });
+      const second = await findOrCreatePendingMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+      });
+      expect(second).toBeDefined();
+      expect(second.id).toBe(first.id);
+    });
+
+    it('does not regress an existing ACTIVE membership back to pending or viewer', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await addMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+        role: 'owner',
+        status: 'active',
+      });
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+      const [membership] = await listMemberships(db, workspace.id);
+      expect(membership).toMatchObject({ role: 'owner', status: 'active' });
+    });
+
+    it('creates independent membership rows for two different users requesting the same workspace', async () => {
+      const { workspace, user: userA } = await seedWorkspaceAndUser();
+      const userB = await createUser(db, { email: 'other@acme.test', name: 'Other' });
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: userA.id });
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: userB.id });
+      const members = await listMemberships(db, workspace.id);
+      expect(members).toHaveLength(2);
+      expect(members.map((m) => m.userId).sort()).toEqual([userA.id, userB.id].sort());
+    });
+
+    it('scopes the created membership to only the requested workspace, leaving another workspace untouched', async () => {
+      const { workspace: workspaceA, user } = await seedWorkspaceAndUser();
+      const workspaceB = await createWorkspace(db, { name: 'Other Co' });
+      await findOrCreatePendingMembership(db, { workspaceId: workspaceA.id, userId: user.id });
+      expect(await listMemberships(db, workspaceB.id)).toHaveLength(0);
+    });
+  });
+
+  describe('hasAnyActiveMembership', () => {
+    it('returns true when the user has an active membership', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await addMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+        role: 'viewer',
+        status: 'active',
+      });
+      expect(await hasAnyActiveMembership(db, user.id)).toBe(true);
+    });
+
+    it('returns false when the user has zero memberships', async () => {
+      const { user } = await seedWorkspaceAndUser();
+      expect(await hasAnyActiveMembership(db, user.id)).toBe(false);
+    });
+
+    it('returns false when the user only has pending memberships', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+      expect(await hasAnyActiveMembership(db, user.id)).toBe(false);
+    });
+
+    it('is workspace-agnostic: true when pending in workspace A and active in workspace B', async () => {
+      const { workspace: workspaceA, user } = await seedWorkspaceAndUser();
+      const workspaceB = await createWorkspace(db, { name: 'Other Co' });
+      await findOrCreatePendingMembership(db, { workspaceId: workspaceA.id, userId: user.id });
+      await addMembership(db, {
+        workspaceId: workspaceB.id,
+        userId: user.id,
+        role: 'viewer',
+        status: 'active',
+      });
+      expect(await hasAnyActiveMembership(db, user.id)).toBe(true);
+    });
+
+    it('returns false, not a throw, for a user id with no row in users at all', async () => {
+      await expect(
+        hasAnyActiveMembership(db, '00000000-0000-0000-0000-000000000000'),
+      ).resolves.toBe(false);
+    });
   });
 });
 
