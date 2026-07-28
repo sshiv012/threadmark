@@ -127,6 +127,34 @@ describe('can — negative / adversarial (values cast past the type system)', ()
     };
     expect(can(principal, 'workspace:manage_members', resource('workspace'))).toBe(false);
   });
+
+  it('unrecognized principal kind is denied for actions beyond manage_members too, even with an owner role (review regression)', () => {
+    const principal: Principal = {
+      kind: 'service_account' as PrincipalKind,
+      subjectId: 'svc-1',
+      workspaceId: WS_A,
+      role: 'owner',
+    };
+    expect(can(principal, 'evidence_document:write', resource('evidence_document'))).toBe(false);
+    expect(can(principal, 'evidence_document:read', resource('evidence_document'))).toBe(false);
+    expect(can(principal, 'agent_run:trigger', resource('agent_run'))).toBe(false);
+  });
+
+  it('a role of "__proto__" is denied and does not throw via the prototype chain (review regression)', () => {
+    const role = '__proto__' as MembershipRole;
+    expect(() =>
+      can(human(role), 'evidence_document:read', resource('evidence_document')),
+    ).not.toThrow();
+    expect(can(human(role), 'evidence_document:read', resource('evidence_document'))).toBe(false);
+  });
+
+  it('a role of "constructor" is denied and does not throw (review regression)', () => {
+    const role = 'constructor' as MembershipRole;
+    expect(() =>
+      can(human(role), 'evidence_document:read', resource('evidence_document')),
+    ).not.toThrow();
+    expect(can(human(role), 'evidence_document:read', resource('evidence_document'))).toBe(false);
+  });
 });
 
 describe('can — edge / boundary: human vs. agent-persona symmetry', () => {
