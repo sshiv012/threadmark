@@ -22,6 +22,13 @@
       "when": 1784869985031,
       "tag": "0002_volatile_maximus",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784960224817,
+      "tag": "0003_colorful_night_nurse",
+      "breakpoints": true
     }
   ]
 }
