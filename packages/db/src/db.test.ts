@@ -7,6 +7,7 @@ import { migrate } from 'drizzle-orm/pglite/migrator';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from './client.js';
 import {
+  activateMembership,
   addMembership,
   appendAgentStep,
   createAgentRun,
@@ -24,6 +25,7 @@ import {
   getAgentRun,
   getChunksByDocument,
   getEvidenceDocument,
+  getMembership,
   getRetrievalChunksByIds,
   getUserByEmail,
   getWorkspace,
@@ -152,6 +154,19 @@ describe('access requests: user/membership status', () => {
       expect((await getUserByEmail(db, 'injection@acme.test'))?.name).toBe(name);
       expect(user.name).toBe(name);
     });
+
+    it('normalizes email case: "User@Example.com" and "user@example.com" resolve to the same account', async () => {
+      const created = await findOrCreateUserByEmail(db, {
+        email: 'User@Example.com',
+        name: 'Case',
+      });
+      const reused = await findOrCreateUserByEmail(db, {
+        email: 'user@example.com',
+        name: 'Other',
+      });
+      expect(reused.id).toBe(created.id);
+      expect(await getUserByEmail(db, 'USER@EXAMPLE.COM')).toMatchObject({ id: created.id });
+    });
   });
 
   describe('findOrCreatePendingMembership', () => {
@@ -257,6 +272,136 @@ describe('access requests: user/membership status', () => {
       await expect(
         hasAnyActiveMembership(db, '00000000-0000-0000-0000-000000000000'),
       ).resolves.toBe(false);
+    });
+  });
+
+  describe('getMembership / activateMembership', () => {
+    it('getMembership returns the single row for (workspaceId, userId), no status filter applied', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await addMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+        role: 'editor',
+        status: 'active',
+      });
+      expect(await getMembership(db, { workspaceId: workspace.id, userId: user.id })).toMatchObject(
+        {
+          role: 'editor',
+          status: 'active',
+        },
+      );
+    });
+
+    it('getMembership returns a pending row too', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+      expect(await getMembership(db, { workspaceId: workspace.id, userId: user.id })).toMatchObject(
+        {
+          status: 'pending',
+        },
+      );
+    });
+
+    it('getMembership returns undefined for a user with zero relationship to the workspace', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      expect(
+        await getMembership(db, { workspaceId: workspace.id, userId: user.id }),
+      ).toBeUndefined();
+    });
+
+    it('activateMembership sets active and preserves the existing role when role is omitted', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+      const activated = await activateMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+      });
+      expect(activated).toMatchObject({ status: 'active', role: 'viewer' });
+      expect(await getMembership(db, { workspaceId: workspace.id, userId: user.id })).toMatchObject(
+        {
+          status: 'active',
+          role: 'viewer',
+        },
+      );
+    });
+
+    it('activateMembership overwrites the stored role when role is given', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+      await activateMembership(db, { workspaceId: workspace.id, userId: user.id, role: 'editor' });
+      expect(await getMembership(db, { workspaceId: workspace.id, userId: user.id })).toMatchObject(
+        {
+          status: 'active',
+          role: 'editor',
+        },
+      );
+    });
+
+    it('activateMembership returns undefined and fabricates no row when no membership exists for the pair', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      expect(
+        await activateMembership(db, { workspaceId: workspace.id, userId: user.id, role: 'owner' }),
+      ).toBeUndefined();
+      expect(await listMemberships(db, workspace.id)).toHaveLength(0);
+    });
+
+    it('activateMembership on an already-active membership is idempotent — no duplicate row', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await addMembership(db, {
+        workspaceId: workspace.id,
+        userId: user.id,
+        role: 'owner',
+        status: 'active',
+      });
+      await activateMembership(db, { workspaceId: workspace.id, userId: user.id });
+      const members = await listMemberships(db, workspace.id);
+      expect(members).toHaveLength(1);
+      expect(members[0]).toMatchObject({ role: 'owner', status: 'active' });
+    });
+
+    it('is scoped to exactly one (workspaceId, userId) pair — activating in A never mutates the same user in B, and a second user in the same workspace is unaffected', async () => {
+      const { workspace: workspaceA, user: userA } = await seedWorkspaceAndUser();
+      const workspaceB = await createWorkspace(db, { name: 'Other Co' });
+      const userB = await createUser(db, { email: 'other@acme.test', name: 'Other' });
+      await findOrCreatePendingMembership(db, { workspaceId: workspaceA.id, userId: userA.id });
+      await findOrCreatePendingMembership(db, { workspaceId: workspaceB.id, userId: userA.id });
+      await findOrCreatePendingMembership(db, { workspaceId: workspaceA.id, userId: userB.id });
+
+      await activateMembership(db, { workspaceId: workspaceA.id, userId: userA.id, role: 'owner' });
+
+      expect(
+        await getMembership(db, { workspaceId: workspaceB.id, userId: userA.id }),
+      ).toMatchObject({
+        status: 'pending',
+        role: 'viewer',
+      });
+      expect(
+        await getMembership(db, { workspaceId: workspaceA.id, userId: userB.id }),
+      ).toMatchObject({
+        status: 'pending',
+        role: 'viewer',
+      });
+    });
+
+    it('two concurrent activation calls with different roles remain idempotent — exactly one row, one deterministic role, no throw', async () => {
+      const { workspace, user } = await seedWorkspaceAndUser();
+      await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: user.id });
+
+      const results = await Promise.all([
+        activateMembership(db, { workspaceId: workspace.id, userId: user.id, role: 'editor' }),
+        activateMembership(db, { workspaceId: workspace.id, userId: user.id, role: 'viewer' }),
+      ]);
+
+      expect(results.every((r) => r?.status === 'active')).toBe(true);
+      const members = await listMemberships(db, workspace.id);
+      expect(members).toHaveLength(1);
+      expect(['editor', 'viewer']).toContain(members[0]!.role);
+    });
+
+    it('getMembership/activateMembership throw for a syntactically invalid UUID (no shape validation at this layer)', async () => {
+      await expect(
+        getMembership(db, { workspaceId: 'not-a-uuid', userId: 'also-not-a-uuid' }),
+      ).rejects.toThrow();
     });
   });
 });

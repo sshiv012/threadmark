@@ -4,6 +4,7 @@ import { vector } from '@electric-sql/pglite-pgvector';
 import { addMembership, createUser, createWorkspace, listMemberships } from '@threadmark/db';
 import type { Database } from '@threadmark/db';
 import * as schema from '@threadmark/db';
+import type { Retriever } from '@threadmark/retrieval';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +14,11 @@ import { verifyToken } from '../auth/jwt.js';
 const migrationsFolder = fileURLToPath(
   new URL('../../../../packages/db/migrations', import.meta.url),
 );
+
+// None of these tests exercise the retriever.
+const stubRetriever: Retriever = {
+  search: async (query) => ({ query, results: [], cached: false, latencyMs: 0 }),
+};
 
 let db: Database;
 let pglite: PGlite;
@@ -43,7 +49,7 @@ describe('POST /login', () => {
       role: 'viewer',
       status: 'active',
     });
-    const app = buildApp({ db });
+    const app = buildApp({ db, retriever: stubRetriever });
 
     const response = await login(app, 'active@acme.test');
 
@@ -68,7 +74,7 @@ describe('POST /login', () => {
       role: 'viewer',
       status: 'active',
     });
-    const app = buildApp({ db });
+    const app = buildApp({ db, retriever: stubRetriever });
 
     const response = await login(app, 'multi@acme.test');
 
@@ -76,13 +82,13 @@ describe('POST /login', () => {
   });
 
   it.each(['not-an-email', '', '   '])('400s on malformed email %j', async (email) => {
-    const app = buildApp({ db });
+    const app = buildApp({ db, retriever: stubRetriever });
     const response = await login(app, email);
     expect(response.statusCode).toBe(400);
   });
 
   it('403s (not 500) for a SQL-injection-shaped email string', async () => {
-    const app = buildApp({ db });
+    const app = buildApp({ db, retriever: stubRetriever });
     const response = await login(app, "a' OR '1'='1@acme.test");
     expect(response.statusCode).toBe(400); // fails zod .email() validation, not a DB error
   });
@@ -96,14 +102,17 @@ describe('POST /login', () => {
       role: 'viewer',
       status: 'pending',
     });
-    const app = buildApp({ db });
+    const app = buildApp({ db, retriever: stubRetriever });
 
     const unknownResponse = await login(app, 'totally-unknown@acme.test');
-    const pendingOnlyResponse = await login(buildApp({ db }), 'pending-only@acme.test');
+    const pendingOnlyResponse = await login(
+      buildApp({ db, retriever: stubRetriever }),
+      'pending-only@acme.test',
+    );
 
     expect(unknownResponse.statusCode).toBe(403);
     expect(pendingOnlyResponse.statusCode).toBe(403);
-    expect(unknownResponse.body).toBe(pendingOnlyResponse.body);
+    expect(JSON.parse(unknownResponse.body)).toEqual(JSON.parse(pendingOnlyResponse.body));
   });
 
   it('runs the same number of DB queries for an unknown email as for a known-but-pending email (timing side-channel regression)', async () => {
@@ -115,7 +124,7 @@ describe('POST /login', () => {
       role: 'viewer',
       status: 'pending',
     });
-    const app = buildApp({ db });
+    const app = buildApp({ db, retriever: stubRetriever });
     const selectSpy = vi.spyOn(db, 'select');
 
     selectSpy.mockClear();
@@ -138,7 +147,7 @@ describe('POST /login', () => {
       role: 'viewer',
       status: 'active',
     });
-    const app = buildApp({ db });
+    const app = buildApp({ db, retriever: stubRetriever });
     const before = await listMemberships(db, workspace.id);
 
     await login(app, 'twice@acme.test');

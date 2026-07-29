@@ -11,9 +11,14 @@
     "api": "node --env-file=../../.env dist/index.js"
   },
   "dependencies": {
+    "@threadmark/core": "workspace:^",
     "@threadmark/db": "workspace:^",
+    "@threadmark/model-router": "workspace:^",
+    "@threadmark/retrieval": "workspace:^",
+    "@threadmark/search": "workspace:^",
     "@threadmark/telemetry": "workspace:^",
     "fastify": "^5.10.0",
+    "ioredis": "^5.11.1",
     "jose": "^6.2.4",
     "zod": "^4.4.3"
   },
