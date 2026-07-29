@@ -83,16 +83,24 @@ export async function findOrCreateWorkspaceByName(db: Database, name: string): P
 }
 
 export async function createUser(db: Database, input: NewUser): Promise<User> {
-  const [row] = await db.insert(users).values(input).returning();
+  const [row] = await db
+    .insert(users)
+    .values({ ...input, email: normalizeEmail(input.email) })
+    .returning();
   return row!;
 }
 
-// Emails are case-normalized to lowercase before any lookup/insert so
+// Emails are case-normalized to lowercase before EVERY lookup/insert —
+// createUser included, not just findOrCreateUserByEmail — so
 // 'User@Example.com' and 'user@example.com' always resolve to the same
-// account — the local part of an email is technically case-sensitive per
+// account. The local part of an email is technically case-sensitive per
 // RFC 5321, but universally treated as case-insensitive in practice, and a
 // caller across access-requests/login/grants must never be able to create
-// two accounts for what a human considers the same address.
+// two accounts for what a human considers the same address. Normalizing at
+// every write path (rather than only the lookup path) is what makes the
+// unique constraint on `email` actually enforce that — see also the
+// supplementary UNIQUE index on LOWER(email) in migration 0006, which
+// catches any future write path that bypasses this function entirely.
 function normalizeEmail(email: string): string {
   return email.toLowerCase();
 }

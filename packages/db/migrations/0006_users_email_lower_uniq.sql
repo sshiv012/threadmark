@@ -1,0 +1,11 @@
+-- Defense-in-depth on top of the application-level normalization in
+-- createUser/findOrCreateUserByEmail (repositories.ts): a unique index on
+-- LOWER(email) means the DATABASE itself enforces case-insensitive
+-- uniqueness, not just the repository functions that currently normalize
+-- before writing. This catches any future write path (a raw SQL script, a
+-- repository function that forgets to normalize) that would otherwise be
+-- able to insert a case-duplicate account.
+--
+-- Safe to apply now: migration 0005 already backfilled every existing row
+-- to lowercase, so no pre-existing row can collide with this index.
+CREATE UNIQUE INDEX "users_email_lower_uniq" ON "users" (LOWER("email"));

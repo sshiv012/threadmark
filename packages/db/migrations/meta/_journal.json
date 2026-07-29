@@ -43,6 +43,13 @@
       "when": 1785289178861,
       "tag": "0005_normalize_user_emails",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785294593917,
+      "tag": "0006_users_email_lower_uniq",
+      "breakpoints": true
     }
   ]
 }

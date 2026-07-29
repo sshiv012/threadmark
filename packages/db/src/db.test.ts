@@ -180,6 +180,19 @@ describe('access requests: user/membership status', () => {
       await db.execute(sql`UPDATE users SET email = LOWER(email) WHERE email != LOWER(email)`);
       expect(await getUserByEmail(db, 'legacy@example.com')).toMatchObject({ name: 'Legacy' });
     });
+
+    it('createUser normalizes email case too, not just findOrCreateUserByEmail (review regression)', async () => {
+      const user = await createUser(db, { email: 'Mixed@Example.com', name: 'Mixed' });
+      expect(user.email).toBe('mixed@example.com');
+      expect(await getUserByEmail(db, 'MIXED@EXAMPLE.COM')).toMatchObject({ id: user.id });
+    });
+
+    it('the users_email_lower_uniq index rejects a case-duplicate insert that bypasses repository normalization (review regression)', async () => {
+      await createUser(db, { email: 'dup@acme.test', name: 'A' });
+      await expect(
+        db.execute(sql`INSERT INTO users (email, name) VALUES ('DUP@ACME.TEST', 'B')`),
+      ).rejects.toThrow();
+    });
   });
 
   describe('findOrCreatePendingMembership', () => {
