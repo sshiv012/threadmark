@@ -29,6 +29,7 @@ import {
   type EvidenceDocument,
   type EvidenceSourceType,
   type Membership,
+  type MembershipRole,
   type NewAgentRun,
   type NewAgentStep,
   type NewChunk,
@@ -82,12 +83,34 @@ export async function findOrCreateWorkspaceByName(db: Database, name: string): P
 }
 
 export async function createUser(db: Database, input: NewUser): Promise<User> {
-  const [row] = await db.insert(users).values(input).returning();
+  const [row] = await db
+    .insert(users)
+    .values({ ...input, email: normalizeEmail(input.email) })
+    .returning();
   return row!;
 }
 
+// Emails are case-normalized to lowercase before EVERY lookup/insert —
+// createUser included, not just findOrCreateUserByEmail — so
+// 'User@Example.com' and 'user@example.com' always resolve to the same
+// account. The local part of an email is technically case-sensitive per
+// RFC 5321, but universally treated as case-insensitive in practice, and a
+// caller across access-requests/login/grants must never be able to create
+// two accounts for what a human considers the same address. Normalizing at
+// every write path (rather than only the lookup path) is what makes the
+// unique constraint on `email` actually enforce that — see also the
+// supplementary UNIQUE index on LOWER(email) in migration 0006, which
+// catches any future write path that bypasses this function entirely.
+function normalizeEmail(email: string): string {
+  return email.toLowerCase();
+}
+
 export async function getUserByEmail(db: Database, email: string): Promise<User | undefined> {
-  const [row] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  const [row] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, normalizeEmail(email)))
+    .limit(1);
   return row;
 }
 
@@ -111,13 +134,14 @@ export async function findOrCreateUserByEmail(
   db: Database,
   input: { email: string; name: string },
 ): Promise<User> {
+  const email = normalizeEmail(input.email);
   const [inserted] = await db
     .insert(users)
-    .values({ email: input.email, name: input.name })
+    .values({ email, name: input.name })
     .onConflictDoNothing({ target: users.email })
     .returning();
   if (inserted) return inserted;
-  const existing = await getUserByEmail(db, input.email);
+  const existing = await getUserByEmail(db, email);
   if (!existing) throw new Error('user insert conflicted but no existing row found');
   return existing;
 }
@@ -168,6 +192,89 @@ export async function hasAnyActiveMembership(db: Database, userId: string): Prom
     .where(and(eq(memberships.userId, userId), eq(memberships.status, 'active')))
     .limit(1);
   return row !== undefined;
+}
+
+/**
+ * Single-row lookup for (workspaceId, userId) — the request-scoped auth seam:
+ * "does this user have ANY relationship (pending or active) with THIS
+ * workspace". Applies no status filter itself; callers (the auth
+ * preHandler) check `.status === 'active'` themselves. Throws on a
+ * syntactically invalid UUID (no shape validation at this layer) — callers
+ * that accept a workspaceId/userId from an untrusted source (e.g. an HTTP
+ * path param) must validate its shape themselves before calling this.
+ */
+export async function getMembership(
+  db: Database,
+  input: { workspaceId: string; userId: string },
+): Promise<Membership | undefined> {
+  const [row] = await db
+    .select()
+    .from(memberships)
+    .where(
+      and(eq(memberships.workspaceId, input.workspaceId), eq(memberships.userId, input.userId)),
+    )
+    .limit(1);
+  return row;
+}
+
+/**
+ * Thrown by `activateMembership` when the requested change would leave a
+ * workspace with zero active owners — only an active owner can grant, so
+ * that state is unrecoverable without direct DB access. Callers should map
+ * this to a 409, not a 500.
+ */
+export class LastOwnerDemotionError extends Error {}
+
+/**
+ * Activate an existing (workspaceId, userId) membership — the "grant" step.
+ * `role` is optional: omitted keeps the existing stored role (e.g. the
+ * 'viewer' seeded at request time) unchanged; given, it overwrites it.
+ * Returns `undefined` if no membership row exists for this pair — this
+ * function only activates a prior request, it never creates one.
+ *
+ * Runs in a transaction: when `role` would change an existing active owner
+ * away from 'owner', the workspace's active-owner rows are locked
+ * (`SELECT ... FOR UPDATE`) before deciding whether any would remain —
+ * otherwise two concurrent grant requests could each read "there's another
+ * owner" before either commits, and both demote, leaving zero. The lock
+ * only applies to this narrow case (a plain role-preserving or role='owner'
+ * activation never touches it), so it adds no contention to the common path.
+ */
+export async function activateMembership(
+  db: Database,
+  input: { workspaceId: string; userId: string; role?: MembershipRole },
+): Promise<Membership | undefined> {
+  return db.transaction(async (tx) => {
+    const possibleDemotion = input.role !== undefined && input.role !== 'owner';
+    if (possibleDemotion) {
+      const activeOwners = await tx
+        .select()
+        .from(memberships)
+        .where(
+          and(
+            eq(memberships.workspaceId, input.workspaceId),
+            eq(memberships.role, 'owner'),
+            eq(memberships.status, 'active'),
+          ),
+        )
+        .for('update');
+
+      const isCurrentlyActiveOwner = activeOwners.some((m) => m.userId === input.userId);
+      const remainingOwners = activeOwners.filter((m) => m.userId !== input.userId);
+      if (isCurrentlyActiveOwner && remainingOwners.length === 0) {
+        throw new LastOwnerDemotionError('cannot remove the last active owner');
+      }
+    }
+
+    const [row] = await tx
+      .update(memberships)
+      .set({ status: 'active', ...(input.role ? { role: input.role } : {}) })
+      .where(
+        and(eq(memberships.workspaceId, input.workspaceId), eq(memberships.userId, input.userId)),
+      )
+      .returning();
+    return row;
+  });
 }
 
 // ── Evidence documents ───────────────────────────────────────────────────────
