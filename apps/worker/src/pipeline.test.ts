@@ -15,7 +15,7 @@ import { createModelRouter } from '@threadmark/model-router';
 import { InMemorySearchIndex } from '@threadmark/search';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { extractAndChunk, embedChunks, indexChunks, type IngestionDeps } from './pipeline.js';
 import { CHUNK_INDEX } from './shared.js';
 
@@ -31,10 +31,11 @@ Links should support viewer-only access, expiry, and revoke.`;
 let deps: IngestionDeps;
 let documentId: string;
 let workspaceId: string;
+let pglite: PGlite;
 
 beforeEach(async () => {
-  const pg = new PGlite({ extensions: { vector } });
-  const pgliteDb = drizzle(pg, { schema });
+  pglite = new PGlite({ extensions: { vector } });
+  const pgliteDb = drizzle(pglite, { schema });
   await migrate(pgliteDb, { migrationsFolder });
   const db = pgliteDb as unknown as Database;
 
@@ -59,6 +60,10 @@ beforeEach(async () => {
     checksum: 'sha-1',
   });
   documentId = document.id;
+});
+
+afterEach(async () => {
+  await pglite.close();
 });
 
 describe('ingestion pipeline', () => {
