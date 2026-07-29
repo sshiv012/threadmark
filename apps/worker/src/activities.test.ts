@@ -23,6 +23,7 @@ function mockAttempt(attempt: number): void {
 }
 
 let db: Database;
+let pglite: PGlite;
 let workspaceId: string;
 let runId: string;
 let exporter: InMemorySpanExporter;
@@ -35,8 +36,8 @@ beforeEach(async () => {
   // slate regardless of how the previous test exited.
   trace.disable();
 
-  const pg = new PGlite({ extensions: { vector } });
-  const pgliteDb = drizzle(pg, { schema });
+  pglite = new PGlite({ extensions: { vector } });
+  const pgliteDb = drizzle(pglite, { schema });
   await migrate(pgliteDb, { migrationsFolder });
   db = pgliteDb as unknown as Database;
 
@@ -56,7 +57,7 @@ beforeEach(async () => {
   mockAttempt(1);
 });
 
-afterEach(() => {
+afterEach(async () => {
   trace.disable();
   // Guard, not just a timeout bump: if beforeEach itself ever fails/aborts
   // before reaching the `exporter = ...` assignment, afterEach still runs —
@@ -64,6 +65,10 @@ afterEach(() => {
   // masks the real (beforeEach) failure.
   exporter?.reset();
   vi.clearAllMocks();
+  // Each test leaves its PGlite instance open otherwise, accumulating
+  // resource pressure across the suite — exactly what was behind the
+  // original hook-timeout failure, independent of the timeout ceiling above.
+  await pglite?.close();
 });
 
 describe('withStep', () => {
