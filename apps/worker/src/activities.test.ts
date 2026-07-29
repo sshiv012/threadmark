@@ -28,6 +28,13 @@ let runId: string;
 let exporter: InMemorySpanExporter;
 
 beforeEach(async () => {
+  // Defensive, not just tidy: if a PRECEDING test's hook ever timed out,
+  // its afterEach (which calls trace.disable()) may never have run, leaving
+  // OTel's global tracer provider registered from that test. Disabling here
+  // too — before registering this test's own provider — guarantees a clean
+  // slate regardless of how the previous test exited.
+  trace.disable();
+
   const pg = new PGlite({ extensions: { vector } });
   const pgliteDb = drizzle(pg, { schema });
   await migrate(pgliteDb, { migrationsFolder });
@@ -51,7 +58,11 @@ beforeEach(async () => {
 
 afterEach(() => {
   trace.disable();
-  exporter.reset();
+  // Guard, not just a timeout bump: if beforeEach itself ever fails/aborts
+  // before reaching the `exporter = ...` assignment, afterEach still runs —
+  // without this guard that surfaces as a confusing secondary TypeError that
+  // masks the real (beforeEach) failure.
+  exporter?.reset();
   vi.clearAllMocks();
 });
 
