@@ -1,5 +1,5 @@
 import { can } from '@threadmark/core';
-import { activateMembership, getMembership, getUserByEmail, listMemberships } from '@threadmark/db';
+import { activateMembership, getMembership, getUserByEmail } from '@threadmark/db';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../app.js';
@@ -15,9 +15,11 @@ const bodySchema = z.object({
  * workspace. Never creates a membership row — 404s if the target has none.
  * `role` omitted keeps the seeded 'viewer'; given, it overwrites it.
  *
- * Guards against demoting the workspace's last active owner (self-grant or
- * otherwise) — leaving zero active owners would permanently lock everyone
- * out of workspace:manage_members, since only an active owner can grant.
+ * Last-owner protection (never leave a workspace with zero active owners)
+ * is enforced atomically inside `activateMembership` itself (row-locked
+ * transaction), not here — a route-level check-then-write would race under
+ * concurrent requests. `LastOwnerDemotionError` bubbles to the shared error
+ * handler in app.ts, mapped to 409.
  */
 export function registerGrantsRoute(app: FastifyInstance, deps: AppDeps): void {
   app.post(
@@ -54,24 +56,6 @@ export function registerGrantsRoute(app: FastifyInstance, deps: AppDeps): void {
           .status(404)
           .send({ error: 'not_found', message: 'no prior access request for this email' });
         return;
-      }
-
-      const demotingAnOwner =
-        targetMembership.status === 'active' &&
-        targetMembership.role === 'owner' &&
-        body.role !== undefined &&
-        body.role !== 'owner';
-      if (demotingAnOwner) {
-        const members = await listMemberships(deps.db, workspaceId);
-        const otherActiveOwners = members.filter(
-          (m) => m.userId !== targetUser.id && m.role === 'owner' && m.status === 'active',
-        );
-        if (otherActiveOwners.length === 0) {
-          reply
-            .status(409)
-            .send({ error: 'conflict', message: 'cannot remove the last active owner' });
-          return;
-        }
       }
 
       const activated = await activateMembership(deps.db, {

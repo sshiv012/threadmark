@@ -1,0 +1,14 @@
+-- Backfill any pre-existing mixed-case emails to lowercase, matching the
+-- normalization findOrCreateUserByEmail/getUserByEmail now apply on every
+-- read/write (repositories.ts). Without this, a user stored before that
+-- change (e.g. "User@Example.com") would never be found by a normalized
+-- lookup, and a later request with the lowercase form could create a
+-- second, duplicate account.
+--
+-- Left as a raw UPDATE, not a merge: if two rows already collide once
+-- normalized (e.g. both "User@Example.com" and "user@example.com" exist),
+-- the unique constraint on users.email correctly rejects this migration
+-- rather than silently picking a winner. That scenario requires genuinely
+-- pre-existing production data with a case-duplicate account, which this
+-- project does not have.
+UPDATE "users" SET "email" = LOWER("email") WHERE "email" != LOWER("email");

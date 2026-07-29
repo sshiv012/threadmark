@@ -210,24 +210,63 @@ export async function getMembership(
 }
 
 /**
+ * Thrown by `activateMembership` when the requested change would leave a
+ * workspace with zero active owners — only an active owner can grant, so
+ * that state is unrecoverable without direct DB access. Callers should map
+ * this to a 409, not a 500.
+ */
+export class LastOwnerDemotionError extends Error {}
+
+/**
  * Activate an existing (workspaceId, userId) membership — the "grant" step.
  * `role` is optional: omitted keeps the existing stored role (e.g. the
  * 'viewer' seeded at request time) unchanged; given, it overwrites it.
  * Returns `undefined` if no membership row exists for this pair — this
  * function only activates a prior request, it never creates one.
+ *
+ * Runs in a transaction: when `role` would change an existing active owner
+ * away from 'owner', the workspace's active-owner rows are locked
+ * (`SELECT ... FOR UPDATE`) before deciding whether any would remain —
+ * otherwise two concurrent grant requests could each read "there's another
+ * owner" before either commits, and both demote, leaving zero. The lock
+ * only applies to this narrow case (a plain role-preserving or role='owner'
+ * activation never touches it), so it adds no contention to the common path.
  */
 export async function activateMembership(
   db: Database,
   input: { workspaceId: string; userId: string; role?: MembershipRole },
 ): Promise<Membership | undefined> {
-  const [row] = await db
-    .update(memberships)
-    .set({ status: 'active', ...(input.role ? { role: input.role } : {}) })
-    .where(
-      and(eq(memberships.workspaceId, input.workspaceId), eq(memberships.userId, input.userId)),
-    )
-    .returning();
-  return row;
+  return db.transaction(async (tx) => {
+    const possibleDemotion = input.role !== undefined && input.role !== 'owner';
+    if (possibleDemotion) {
+      const activeOwners = await tx
+        .select()
+        .from(memberships)
+        .where(
+          and(
+            eq(memberships.workspaceId, input.workspaceId),
+            eq(memberships.role, 'owner'),
+            eq(memberships.status, 'active'),
+          ),
+        )
+        .for('update');
+
+      const isCurrentlyActiveOwner = activeOwners.some((m) => m.userId === input.userId);
+      const remainingOwners = activeOwners.filter((m) => m.userId !== input.userId);
+      if (isCurrentlyActiveOwner && remainingOwners.length === 0) {
+        throw new LastOwnerDemotionError('cannot remove the last active owner');
+      }
+    }
+
+    const [row] = await tx
+      .update(memberships)
+      .set({ status: 'active', ...(input.role ? { role: input.role } : {}) })
+      .where(
+        and(eq(memberships.workspaceId, input.workspaceId), eq(memberships.userId, input.userId)),
+      )
+      .returning();
+    return row;
+  });
 }
 
 // ── Evidence documents ───────────────────────────────────────────────────────

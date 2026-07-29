@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -31,6 +31,7 @@ import {
   getWorkspace,
   getWorkspaceRetrievalRevision,
   hasAnyActiveMembership,
+  LastOwnerDemotionError,
   listAgentSteps,
   listEvalQueriesWithJudgments,
   listMemberships,
@@ -166,6 +167,18 @@ describe('access requests: user/membership status', () => {
       });
       expect(reused.id).toBe(created.id);
       expect(await getUserByEmail(db, 'USER@EXAMPLE.COM')).toMatchObject({ id: created.id });
+    });
+
+    it('the 0005 backfill migration normalizes a pre-existing mixed-case row (review regression)', async () => {
+      // Simulates a row written before email normalization existed (e.g. by
+      // an older app version or a direct import) by bypassing
+      // findOrCreateUserByEmail's normalization and writing mixed-case
+      // directly, then re-running the backfill migration's own statement.
+      await db.execute(
+        sql`INSERT INTO users (email, name) VALUES ('Legacy@Example.com', 'Legacy')`,
+      );
+      await db.execute(sql`UPDATE users SET email = LOWER(email) WHERE email != LOWER(email)`);
+      expect(await getUserByEmail(db, 'legacy@example.com')).toMatchObject({ name: 'Legacy' });
     });
   });
 
@@ -402,6 +415,59 @@ describe('access requests: user/membership status', () => {
       await expect(
         getMembership(db, { workspaceId: 'not-a-uuid', userId: 'also-not-a-uuid' }),
       ).rejects.toThrow();
+    });
+
+    it("two concurrent requests demoting each of a workspace's two owners cannot both succeed — at least one active owner always remains (review regression)", async () => {
+      const workspace = await createWorkspace(db, { name: 'Acme' });
+      const ownerA = await createUser(db, { email: 'owner-a@acme.test', name: 'A' });
+      const ownerB = await createUser(db, { email: 'owner-b@acme.test', name: 'B' });
+      await addMembership(db, {
+        workspaceId: workspace.id,
+        userId: ownerA.id,
+        role: 'owner',
+        status: 'active',
+      });
+      await addMembership(db, {
+        workspaceId: workspace.id,
+        userId: ownerB.id,
+        role: 'owner',
+        status: 'active',
+      });
+
+      const results = await Promise.allSettled([
+        activateMembership(db, { workspaceId: workspace.id, userId: ownerA.id, role: 'viewer' }),
+        activateMembership(db, { workspaceId: workspace.id, userId: ownerB.id, role: 'viewer' }),
+      ]);
+
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(LastOwnerDemotionError);
+      const remainingOwners = (await listMemberships(db, workspace.id)).filter(
+        (m) => m.role === 'owner' && m.status === 'active',
+      );
+      expect(remainingOwners.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('demoting the last owner throws LastOwnerDemotionError, and the row is left unchanged', async () => {
+      const workspace = await createWorkspace(db, { name: 'Acme' });
+      const owner = await createUser(db, { email: 'owner@acme.test', name: 'Owner' });
+      await addMembership(db, {
+        workspaceId: workspace.id,
+        userId: owner.id,
+        role: 'owner',
+        status: 'active',
+      });
+
+      await expect(
+        activateMembership(db, { workspaceId: workspace.id, userId: owner.id, role: 'viewer' }),
+      ).rejects.toThrow(LastOwnerDemotionError);
+
+      expect(
+        await getMembership(db, { workspaceId: workspace.id, userId: owner.id }),
+      ).toMatchObject({
+        role: 'owner',
+        status: 'active',
+      });
     });
   });
 });

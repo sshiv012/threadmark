@@ -1,4 +1,4 @@
-import type { Database } from '@threadmark/db';
+import { LastOwnerDemotionError, type Database } from '@threadmark/db';
 import { RetrievalValidationError, type Retriever } from '@threadmark/retrieval';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
@@ -33,6 +33,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }
     if (error instanceof RetrievalValidationError) {
       reply.status(400).send({ error: 'bad_request', message: 'Invalid request' });
+      return;
+    }
+    if (error instanceof LastOwnerDemotionError) {
+      reply.status(409).send({ error: 'conflict', message: 'cannot remove the last active owner' });
       return;
     }
     request.log.error(error);

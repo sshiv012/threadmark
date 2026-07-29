@@ -290,10 +290,11 @@ describe('POST /workspaces/:workspaceId/grants', () => {
     const target = await createUser(db, { email: 'target@acme.test', name: 'Target' });
     await findOrCreatePendingMembership(db, { workspaceId: workspace.id, userId: target.id });
 
-    // Reuse the real db for auth/lookup, but break `update` (activateMembership's
-    // only DB call) specifically, so the failure happens exactly where expected.
+    // Reuse the real db for auth/lookup, but break `transaction`
+    // (activateMembership now runs entirely inside one, for the last-owner
+    // row lock), so the failure happens exactly where expected.
     const brokenDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
-      update: () => {
+      transaction: () => {
         throw new Error('super secret connection string leaked here');
       },
     }) as Database;
