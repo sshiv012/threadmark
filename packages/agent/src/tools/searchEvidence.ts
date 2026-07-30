@@ -13,6 +13,9 @@ export interface SearchEvidenceResultItem {
   documentTitle: string;
   snippet: string;
   score: number;
+  /** ISO-8601 ingestion time of the owning document — lets the persona
+   *  apply a `most_recent` conflict-resolution strategy when instructed to. */
+  createdAt: string;
 }
 
 export interface SearchEvidenceOutput {
@@ -95,6 +98,7 @@ export function createSearchEvidenceTool(
           documentTitle: r.documentTitle,
           snippet: r.text.slice(0, SNIPPET_MAX_LENGTH),
           score: r.rerankScore,
+          createdAt: r.createdAt,
         })),
       };
     },

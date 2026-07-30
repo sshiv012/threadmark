@@ -89,6 +89,12 @@ export const agentStepErrorCode = pgEnum('agent_step_error_code', [
 // the PRD-generation workflow existing.
 export const evalReportKind = pgEnum('eval_report_kind', ['retrieval', 'trajectory']);
 
+export const conflictResolutionStrategy = pgEnum('conflict_resolution_strategy', [
+  'most_recent',
+  'highest_priority_source',
+  'flag_for_review',
+]);
+
 // ── Tables ───────────────────────────────────────────────────────────────────
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -284,6 +290,22 @@ export const evalReports = pgTable(
   ],
 );
 
+// At most one policy row per workspace; a workspace with none gets the
+// synthesized default ({strategy:'flag_for_review', config:{}}) at read
+// time (see getConflictPolicy) — no row is required to exist.
+export const conflictResolutionPolicies = pgTable('conflict_resolution_policies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .unique()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  strategy: conflictResolutionStrategy('strategy').notNull().default('flag_for_review'),
+  // e.g. { sourceTypePriority: ['prior_prd', 'product_doc', ...] } for
+  // highest_priority_source; {} for the other two strategies.
+  config: jsonb('config').notNull().default({}),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Inferred types ───────────────────────────────────────────────────────────
 export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
@@ -305,6 +327,8 @@ export type EvalJudgment = typeof evalJudgments.$inferSelect;
 export type NewEvalJudgment = typeof evalJudgments.$inferInsert;
 export type EvalReport = typeof evalReports.$inferSelect;
 export type NewEvalReport = typeof evalReports.$inferInsert;
+export type ConflictResolutionPolicy = typeof conflictResolutionPolicies.$inferSelect;
+export type NewConflictResolutionPolicy = typeof conflictResolutionPolicies.$inferInsert;
 
 export type MembershipRole = (typeof membershipRole.enumValues)[number];
 export type MembershipStatus = (typeof membershipStatus.enumValues)[number];
@@ -315,3 +339,4 @@ export type AgentRunStatus = (typeof agentRunStatus.enumValues)[number];
 export type AgentStepStatus = (typeof agentStepStatus.enumValues)[number];
 export type AgentStepErrorCode = (typeof agentStepErrorCode.enumValues)[number];
 export type EvalReportKind = (typeof evalReportKind.enumValues)[number];
+export type ConflictResolutionStrategy = (typeof conflictResolutionStrategy.enumValues)[number];
