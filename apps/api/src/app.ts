@@ -3,6 +3,7 @@ import { RetrievalValidationError, type Retriever } from '@threadmark/retrieval'
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { registerAccessRequestsRoute } from './routes/access-requests.js';
+import { registerConflictPolicyRoute } from './routes/conflict-policy.js';
 import { registerGrantsRoute } from './routes/grants.js';
 import { registerLoginRoute } from './routes/login.js';
 import { registerSearchRoute } from './routes/search.js';
@@ -47,6 +48,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerLoginRoute(app, deps);
   registerGrantsRoute(app, deps);
   registerSearchRoute(app, deps);
+  registerConflictPolicyRoute(app, deps);
 
   return app;
 }

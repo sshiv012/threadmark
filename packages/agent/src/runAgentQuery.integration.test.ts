@@ -9,6 +9,7 @@ import {
   getAgentRun,
   listAgentRuns,
   listAgentSteps,
+  upsertConflictPolicy,
   type Database,
 } from '@threadmark/db';
 import { RetrievalValidationError, type Retriever } from '@threadmark/retrieval';
@@ -334,6 +335,77 @@ describe('runAgentQuery — real DB-backed observability', () => {
       const [run] = await listAgentRuns(db, workspace.id);
       const fetched = await getAgentRun(db, run!.id);
       expect(fetched).toMatchObject({ kind: 'qa', subjectId: null });
+    });
+  });
+
+  describe('conflict-resolution policy — runtime configurable, no downtime', () => {
+    it("patching the policy mid-process changes the very next call's system prompt, with no restart", async () => {
+      const workspace = await createWorkspace(db, { name: 'Acme' });
+      const model = new MockLanguageModelV4({ doGenerate: async () => textStep('answer') });
+      const deps: AgentQueryDeps = { retriever: fakeRetriever(vi.fn()), model, db };
+
+      await runAgentQuery(deps, agentPrincipal(workspace.id), workspace.id, 'q1?');
+      const firstSystem = model.doGenerateCalls[0]!.prompt.find(
+        (m) => m.role === 'system',
+      )!.content;
+
+      await upsertConflictPolicy(db, workspace.id, { strategy: 'most_recent' });
+      await runAgentQuery(deps, agentPrincipal(workspace.id), workspace.id, 'q2?');
+      const secondSystem = model.doGenerateCalls[1]!.prompt.find(
+        (m) => m.role === 'system',
+      )!.content;
+
+      expect(firstSystem).toMatch(/do not pick one/);
+      expect(secondSystem).toMatch(/latest creation date/);
+      expect(secondSystem).not.toBe(firstSystem);
+    });
+
+    it('two workspaces with different configured strategies, queried back-to-back, produce distinguishably different rendered system prompts', async () => {
+      const wsA = await createWorkspace(db, { name: 'A' });
+      const wsB = await createWorkspace(db, { name: 'B' });
+      await upsertConflictPolicy(db, wsA.id, { strategy: 'most_recent' });
+      await upsertConflictPolicy(db, wsB.id, {
+        strategy: 'highest_priority_source',
+        config: { sourceTypePriority: ['prior_prd'] },
+      });
+      const modelA = new MockLanguageModelV4({ doGenerate: async () => textStep('answer A') });
+      const modelB = new MockLanguageModelV4({ doGenerate: async () => textStep('answer B') });
+
+      await runAgentQuery(
+        { retriever: fakeRetriever(vi.fn()), model: modelA, db },
+        agentPrincipal(wsA.id),
+        wsA.id,
+        'qA?',
+      );
+      await runAgentQuery(
+        { retriever: fakeRetriever(vi.fn()), model: modelB, db },
+        agentPrincipal(wsB.id),
+        wsB.id,
+        'qB?',
+      );
+
+      const systemA = modelA.doGenerateCalls[0]!.prompt.find((m) => m.role === 'system')!.content;
+      const systemB = modelB.doGenerateCalls[0]!.prompt.find((m) => m.role === 'system')!.content;
+      expect(systemA).toMatch(/latest creation date/);
+      expect(systemB).toMatch(/priority order: prior_prd/);
+      expect(systemA).not.toBe(systemB);
+    });
+
+    it("workspace A patching its policy never mutates workspace B's row or prompt", async () => {
+      const wsA = await createWorkspace(db, { name: 'A' });
+      const wsB = await createWorkspace(db, { name: 'B' });
+      await upsertConflictPolicy(db, wsA.id, { strategy: 'most_recent' });
+
+      const modelB = new MockLanguageModelV4({ doGenerate: async () => textStep('answer B') });
+      await runAgentQuery(
+        { retriever: fakeRetriever(vi.fn()), model: modelB, db },
+        agentPrincipal(wsB.id),
+        wsB.id,
+        'qB?',
+      );
+
+      const systemB = modelB.doGenerateCalls[0]!.prompt.find((m) => m.role === 'system')!.content;
+      expect(systemB).toMatch(/do not pick one/); // still the untouched default
     });
   });
 });
