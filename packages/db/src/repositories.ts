@@ -20,6 +20,7 @@ import {
   type AgentRun,
   type AgentRunStatus,
   type AgentStep,
+  type AgentStepErrorCode,
   type AgentStepStatus,
   type Chunk,
   type DocumentStatus,
@@ -395,6 +396,14 @@ export async function getAgentRun(db: Database, id: string): Promise<AgentRun | 
   return row;
 }
 
+export async function listAgentRuns(db: Database, workspaceId: string): Promise<AgentRun[]> {
+  return db
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.workspaceId, workspaceId))
+    .orderBy(agentRuns.startedAt);
+}
+
 export async function updateAgentRunStatus(
   db: Database,
   id: string,
@@ -417,6 +426,7 @@ export interface AgentStepPatch {
   status?: AgentStepStatus;
   outputSummary?: string | null;
   error?: string | null;
+  errorCode?: AgentStepErrorCode | null;
   endedAt?: Date;
 }
 

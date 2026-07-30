@@ -21,11 +21,16 @@
     "@ai-sdk/anthropic": "^4.0.23",
     "@ai-sdk/google": "^4.0.27",
     "@threadmark/core": "workspace:^",
+    "@threadmark/db": "workspace:^",
     "@threadmark/retrieval": "workspace:^",
+    "@threadmark/telemetry": "workspace:^",
     "ai": "^7.0.41",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "^4.0.4"
+    "@ai-sdk/provider": "^4.0.4",
+    "@electric-sql/pglite": "^0.5.4",
+    "@electric-sql/pglite-pgvector": "^0.0.5",
+    "drizzle-orm": "^0.45.2"
   }
 }

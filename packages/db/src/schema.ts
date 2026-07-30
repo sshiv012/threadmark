@@ -8,7 +8,9 @@
  * comment / memory tables. agent_run / agent_step (PR5b-1) and eval_* (PR7)
  * already landed.
  */
+import { sql } from 'drizzle-orm';
 import {
+  check,
   index,
   integer,
   jsonb,
@@ -61,7 +63,7 @@ export const evidenceSourceType = pgEnum('evidence_source_type', [
   'other',
 ]);
 
-export const agentRunKind = pgEnum('agent_run_kind', ['ingestion', 'prd_generation']);
+export const agentRunKind = pgEnum('agent_run_kind', ['ingestion', 'prd_generation', 'qa']);
 
 export const agentRunStatus = pgEnum('agent_run_status', [
   'running',
@@ -71,6 +73,16 @@ export const agentRunStatus = pgEnum('agent_run_status', [
 ]);
 
 export const agentStepStatus = pgEnum('agent_step_status', ['running', 'completed', 'failed']);
+
+// Persisted alongside agent_steps.error so a support engineer querying
+// Postgres directly can distinguish "gate/validation denied the tool call"
+// (run still completes) from "the tool itself is broken" (run fails) without
+// needing trace access. Only set on a failed step.
+export const agentStepErrorCode = pgEnum('agent_step_error_code', [
+  'authorization_denied',
+  'invalid_query',
+  'infrastructure_error',
+]);
 
 // 'trajectory' is reserved for a future LLM-judge tier over agent traces —
 // unused today, mirrors how agent_run_kind reserves 'prd_generation' ahead of
@@ -163,12 +175,22 @@ export const agentRuns = pgTable(
       .references(() => workspaces.id, { onDelete: 'cascade' }),
     kind: agentRunKind('kind').notNull(),
     // The entity this run acts on (e.g. an evidence_document or prd id).
-    subjectId: uuid('subject_id').notNull(),
+    // Nullable ONLY for kind='qa': a cited-Q&A run has no natural subject
+    // entity the way ingestion (a document) or prd_generation (a prd) do.
+    // The check constraint below keeps every other kind required, same as
+    // before this column became nullable.
+    subjectId: uuid('subject_id'),
     status: agentRunStatus('status').notNull().default('running'),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp('ended_at', { withTimezone: true }),
   },
-  (table) => [index('agent_runs_workspace_idx').on(table.workspaceId)],
+  (table) => [
+    index('agent_runs_workspace_idx').on(table.workspaceId),
+    check(
+      'agent_runs_subject_id_required_unless_qa',
+      sql`${table.kind} = 'qa' OR ${table.subjectId} IS NOT NULL`,
+    ),
+  ],
 );
 
 export const agentSteps = pgTable(
@@ -187,6 +209,8 @@ export const agentSteps = pgTable(
     inputSummary: text('input_summary'),
     outputSummary: text('output_summary'),
     error: text('error'),
+    // Only set alongside error, on a failed step.
+    errorCode: agentStepErrorCode('error_code'),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp('ended_at', { withTimezone: true }),
   },
@@ -288,4 +312,5 @@ export type EvidenceSourceType = (typeof evidenceSourceType.enumValues)[number];
 export type AgentRunKind = (typeof agentRunKind.enumValues)[number];
 export type AgentRunStatus = (typeof agentRunStatus.enumValues)[number];
 export type AgentStepStatus = (typeof agentStepStatus.enumValues)[number];
+export type AgentStepErrorCode = (typeof agentStepErrorCode.enumValues)[number];
 export type EvalReportKind = (typeof evalReportKind.enumValues)[number];
