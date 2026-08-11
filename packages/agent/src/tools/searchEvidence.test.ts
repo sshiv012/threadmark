@@ -126,6 +126,47 @@ describe('search_evidence tool', () => {
     });
   });
 
+  it('never puts the raw infrastructure error message on the thrown error — it always reaches the next generation step, so a leaked connection string/SQL/credential would reach the model', async () => {
+    const tool = createSearchEvidenceTool(
+      {
+        retriever: fakeRetriever(async () => {
+          throw new Error('connection to postgres://app:s3cr3t@db.internal:5432/prod failed');
+        }),
+      },
+      agentPrincipal(WORKSPACE_A),
+      WORKSPACE_A,
+    );
+
+    await expect(
+      tool.execute!({ query: 'q' }, { toolCallId: 't1', messages: [], context: {} }),
+    ).rejects.toMatchObject({
+      code: 'infrastructure_error',
+      message: expect.not.stringContaining('s3cr3t'),
+    });
+  });
+
+  it('retains the real infrastructure error as `cause`, for internal callers/logging only', async () => {
+    const originalError = new Error('ECONNREFUSED');
+    const tool = createSearchEvidenceTool(
+      {
+        retriever: fakeRetriever(async () => {
+          throw originalError;
+        }),
+      },
+      agentPrincipal(WORKSPACE_A),
+      WORKSPACE_A,
+    );
+
+    let error: SearchEvidenceToolError | undefined;
+    try {
+      await tool.execute!({ query: 'q' }, { toolCallId: 't1', messages: [], context: {} });
+    } catch (caught) {
+      error = caught as SearchEvidenceToolError;
+    }
+
+    expect(error?.cause).toBe(originalError);
+  });
+
   it('checks can() before ever calling retriever.search — a denial never touches the retriever', async () => {
     const search = vi.fn(async () => ({ query: '', results: [], cached: false, latencyMs: 0 }));
     const tool = createSearchEvidenceTool(

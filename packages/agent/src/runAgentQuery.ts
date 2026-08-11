@@ -2,7 +2,7 @@ import type { Principal } from '@threadmark/core';
 import type { Retriever } from '@threadmark/retrieval';
 import { generateText, stepCountIs, type LanguageModel } from 'ai';
 import { createSearchEvidenceTool, SearchEvidenceToolError } from './tools/searchEvidence.js';
-import type { AgentAnswer, RecordedStep, StepRecorder } from './types.js';
+import type { AgentAnswer, RecordedStep, StepErrorCode, StepRecorder } from './types.js';
 
 export interface AgentQueryDeps {
   readonly retriever: Retriever;
@@ -38,11 +38,17 @@ function extractCitations(text: string): string[] {
 
 /** Observability is best-effort: a broken recorder must never fail an
  *  otherwise-successful run, the same way this codebase's telemetry
- *  (withSpan) stays safe even if the tracer itself is broken. */
-function safeRecordStep(recorder: StepRecorder | undefined, step: RecordedStep): void {
+ *  (withSpan) stays safe even if the tracer itself is broken. Always
+ *  awaited: `StepRecorder.recordStep` may return a promise (a real
+ *  DB-backed recorder does), and an unawaited rejection would both escape
+ *  this try/catch and let `runAgentQuery` return before the write lands. */
+async function safeRecordStep(
+  recorder: StepRecorder | undefined,
+  step: RecordedStep,
+): Promise<void> {
   if (!recorder) return;
   try {
-    recorder.recordStep(step);
+    await recorder.recordStep(step);
   } catch (error) {
     console.warn('[agent] stepRecorder.recordStep threw, continuing:', error);
   }
@@ -100,7 +106,7 @@ export async function runAgentQuery(
         toolCalled = true;
         const output = part.output as { results: Array<{ chunkId: string }> };
         for (const r of output.results) returnedChunkIds.add(r.chunkId);
-        safeRecordStep(deps.stepRecorder, {
+        await safeRecordStep(deps.stepRecorder, {
           ord: ord++,
           kind: 'tool_call',
           toolName: 'search_evidence',
@@ -109,8 +115,20 @@ export async function runAgentQuery(
       } else if (part.type === 'tool-error') {
         toolCalled = true;
         const err = part.error;
-        const code = err instanceof SearchEvidenceToolError ? err.code : 'infrastructure_error';
-        safeRecordStep(deps.stepRecorder, {
+        let code: StepErrorCode;
+        if (err instanceof SearchEvidenceToolError) {
+          code = err.code;
+        } else if (typeof err === 'string') {
+          // The AI SDK rejects a schema-invalid tool call (e.g. the model
+          // emitted a non-string `query`) before execute() ever runs, and
+          // represents it here as a plain string — never our own error
+          // type, since our code never touched it. This is a malformed
+          // request from the model, not a broken retriever/backend.
+          code = 'invalid_query';
+        } else {
+          code = 'infrastructure_error';
+        }
+        await safeRecordStep(deps.stepRecorder, {
           ord: ord++,
           kind: 'tool_call',
           toolName: 'search_evidence',
@@ -132,7 +150,7 @@ export async function runAgentQuery(
     throw infrastructureFailure;
   }
 
-  safeRecordStep(deps.stepRecorder, { ord: ord++, kind: 'final_answer', status: 'success' });
+  await safeRecordStep(deps.stepRecorder, { ord: ord++, kind: 'final_answer', status: 'success' });
 
   const allCitations = extractCitations(result.text);
   const citedChunkIds = allCitations.filter((id) => returnedChunkIds.has(id));

@@ -21,14 +21,23 @@ export interface SearchEvidenceOutput {
 
 export class SearchEvidenceToolError extends Error {
   readonly code: StepErrorCode;
-  constructor(message: string, code: StepErrorCode) {
-    super(message);
+  constructor(message: string, code: StepErrorCode, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = 'SearchEvidenceToolError';
     this.code = code;
   }
 }
 
 const SNIPPET_MAX_LENGTH = 400;
+
+// Fixed, model-facing message for infrastructure failures — never the raw
+// error, which could contain a connection string, SQL, or other internal
+// detail. The AI SDK feeds a thrown execute() error into the next
+// generation step (it becomes part of the conversation the model sees), so
+// anything thrown here must already be safe to show the model. The real
+// error is logged server-side and kept as `cause` for any internal caller
+// that wants it; it never leaves this boundary.
+const INFRASTRUCTURE_ERROR_MESSAGE = 'the evidence search service is temporarily unavailable';
 
 /**
  * The one tool this persona has. `workspaceId` is bound from this closure,
@@ -41,7 +50,11 @@ const SNIPPET_MAX_LENGTH = 400;
  * distinguish "the gate/input was wrong, the run should still complete" from
  * "the retriever itself is broken, the whole run must fail" after the AI SDK
  * has already converted the throw into a tool-error step part — a thrown
- * execute() error does NOT by itself reject generateText().
+ * execute() error does NOT by itself reject generateText(). Its `.message`
+ * always reaches the model on the next generation step, so an
+ * infrastructure failure's real error (which can contain a connection
+ * string, SQL, or other internal detail) is never used as the message — it
+ * is logged server-side and kept only as `cause`.
  */
 export function createSearchEvidenceTool(
   deps: { retriever: Retriever },
@@ -70,10 +83,10 @@ export function createSearchEvidenceTool(
         if (error instanceof RetrievalValidationError) {
           throw new SearchEvidenceToolError(error.message, 'invalid_query');
         }
-        throw new SearchEvidenceToolError(
-          error instanceof Error ? error.message : String(error),
-          'infrastructure_error',
-        );
+        console.error('[search_evidence] infrastructure error:', error);
+        throw new SearchEvidenceToolError(INFRASTRUCTURE_ERROR_MESSAGE, 'infrastructure_error', {
+          cause: error,
+        });
       }
 
       return {

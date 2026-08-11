@@ -50,6 +50,27 @@ function toolCallStep(query: string): LanguageModelV4GenerateResult {
   };
 }
 
+/** Schema-invalid per the tool's real Zod inputSchema ({query: z.string()})
+ *  — `query` is a number, not a string. The AI SDK rejects this BEFORE
+ *  execute() ever runs (our execute() never sees it), unlike toolCallStep's
+ *  well-typed-but-empty-string case, which reaches execute() and is
+ *  rejected there by RetrievalValidationError instead. */
+function schemaInvalidToolCallStep(): LanguageModelV4GenerateResult {
+  return {
+    finishReason: { unified: 'tool-calls', raw: undefined },
+    usage: USAGE,
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 't-invalid',
+        toolName: 'search_evidence',
+        input: JSON.stringify({ query: 42 }),
+      },
+    ],
+    warnings: [],
+  };
+}
+
 function textStep(text: string): LanguageModelV4GenerateResult {
   return {
     finishReason: { unified: 'stop', raw: undefined },
@@ -266,6 +287,32 @@ describe('runAgentQuery', () => {
 
       expect(search).toHaveBeenCalledWith('   ', { workspaceId: WORKSPACE_A });
     });
+
+    it('classifies a schema-invalid tool call (query: 42, not a string — rejected by the AI SDK before execute() runs) as invalid_query, and completes the run gracefully rather than failing it', async () => {
+      const search = vi.fn();
+      const recorder = new InMemoryStepRecorder();
+      let callCount = 0;
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          callCount += 1;
+          return callCount === 1
+            ? schemaInvalidToolCallStep()
+            : textStep("I couldn't retrieve evidence.");
+        },
+      });
+      const deps: AgentQueryDeps = {
+        retriever: fakeRetriever(search),
+        model,
+        stepRecorder: recorder,
+      };
+
+      const answer = await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      expect(search).not.toHaveBeenCalled();
+      expect(answer.answer).toContain("couldn't retrieve");
+      expect(recorder.steps[0]).toMatchObject({ status: 'failed', errorCode: 'invalid_query' });
+      expect(recorder.steps.some((s) => s.kind === 'final_answer')).toBe(true);
+    });
   });
 
   describe('multi-tenant isolation', () => {
@@ -413,6 +460,49 @@ describe('runAgentQuery', () => {
       const answer = await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
 
       expect(answer.answer).toBe('an answer');
+    });
+
+    it('does not fail the run when an ASYNC stepRecorder.recordStep() rejects (a real DB-backed recorder can reject a promise, not just throw synchronously)', async () => {
+      const search = vi.fn(async () => ({ query: '', cached: false, latencyMs: 0, results: [] }));
+      const model = new MockLanguageModelV4({ doGenerate: async () => textStep('an answer') });
+      const brokenAsyncRecorder: StepRecorder = {
+        recordStep: async () => {
+          throw new Error('DB unreachable');
+        },
+      };
+      const deps: AgentQueryDeps = {
+        retriever: fakeRetriever(search),
+        model,
+        stepRecorder: brokenAsyncRecorder,
+      };
+
+      const answer = await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      expect(answer.answer).toBe('an answer');
+    });
+
+    it('awaits an async stepRecorder.recordStep() — runAgentQuery does not return before every recorded write actually lands', async () => {
+      const search = vi.fn(async () => ({ query: '', cached: false, latencyMs: 0, results: [] }));
+      const model = new MockLanguageModelV4({ doGenerate: async () => textStep('an answer') });
+      const recorded: RecordedStep[] = [];
+      const slowAsyncRecorder: StepRecorder = {
+        recordStep: async (step) => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          recorded.push(step);
+        },
+      };
+      const deps: AgentQueryDeps = {
+        retriever: fakeRetriever(search),
+        model,
+        stepRecorder: slowAsyncRecorder,
+      };
+
+      await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      // If safeRecordStep failed to await the promise, this would still be
+      // empty here — the write would still be in flight.
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({ kind: 'final_answer', status: 'success' });
     });
   });
 

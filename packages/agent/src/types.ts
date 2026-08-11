@@ -36,11 +36,16 @@ export interface RecordedStep {
  * Injectable observability sink. This sub-PR (10.0) only ships an in-memory
  * default; PR10.1 adds a real DB-backed implementation
  * (appendAgentStep/withSpan/updateAgentStep, mirroring apps/worker's
- * withStep() shape). A recorder failure is best-effort — see
+ * withStep() shape) whose `recordStep` genuinely writes to Postgres, so the
+ * return type must allow a promise — a synchronous-only contract would let
+ * that implementation's rejection escape `safeRecordStep`'s best-effort
+ * try/catch unawaited, and `runAgentQuery` could return before the row is
+ * persisted. A recorder failure is still best-effort — see
  * `runAgentQuery`'s doc comment — it must never fail an otherwise-successful
  * run, the same way this codebase's telemetry (`withSpan`) is safe even if
- * the tracer itself is broken.
+ * the tracer itself is broken; the in-memory default here can keep
+ * returning `void`.
  */
 export interface StepRecorder {
-  recordStep(step: RecordedStep): void;
+  recordStep(step: RecordedStep): Promise<void> | void;
 }
