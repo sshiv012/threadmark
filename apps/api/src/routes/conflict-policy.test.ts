@@ -157,6 +157,20 @@ describe('PATCH /workspaces/:workspaceId/conflict-policy', () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it('400s for a multibyte config payload whose UTF-16 string length is under the bound but whose real UTF-8 byte size exceeds it', async () => {
+    // Each '中' is 1 UTF-16 code unit (counted by .length) but 3 UTF-8 bytes
+    // (counted by Buffer.byteLength) — 4000 of them is ~4000 chars, comfortably
+    // under the 10_000-char mark a naive .length check would allow, but
+    // ~12_000 real bytes, over the actual 10_000-byte bound.
+    const workspace = await createWorkspace(db, { name: 'Acme' });
+    const { token } = await seedOwner(workspace.id);
+    const response = await patchPolicy(workspace.id, token, {
+      strategy: 'flag_for_review',
+      config: { blob: '中'.repeat(4000) },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it('401s when Authorization is absent', async () => {
     const workspace = await createWorkspace(db, { name: 'Acme' });
     const app = buildApp({ db, retriever: stubRetriever });

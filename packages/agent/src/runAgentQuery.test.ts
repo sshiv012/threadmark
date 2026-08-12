@@ -193,6 +193,34 @@ describe('runAgentQuery', () => {
       const systemMessage = model.doGenerateCalls[0]!.prompt.find((m) => m.role === 'system');
       expect(systemMessage!.content).toMatch(/do not pick one/);
     });
+
+    it('[documented limitation] the policy instruction is advisory only — a model that ignores it outright (no conflict tag, no mention of disagreeing sources) still produces a completed run, not an error', async () => {
+      const search = vi.fn(async () => ({
+        query: 'q',
+        cached: false,
+        latencyMs: 1,
+        results: [chunk({ chunkId: 'c1' }), chunk({ chunkId: 'c2' })],
+      }));
+      let callCount = 0;
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          callCount += 1;
+          return callCount === 1
+            ? toolCallStep('q')
+            : // Violates flag_for_review outright: picks one source silently,
+              // names no disagreeing source, emits no [conflict: ...] tag —
+              // nothing here rejects the run or the answer.
+              textStep('The tax rate is 8%. [chunk:c1]');
+        },
+      });
+      const deps: AgentQueryDeps = { retriever: fakeRetriever(search), model };
+
+      const answer = await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      expect(answer.answer).toBe('The tax rate is 8%. [chunk:c1]');
+      expect(answer.citedChunkIds).toEqual(['c1']);
+      expect(answer.unverifiedCitations).toEqual([]);
+    });
   });
 
   describe('negative / adversarial', () => {

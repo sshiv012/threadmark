@@ -31,6 +31,16 @@ function isNonEmptyStringArray(value: unknown): value is string[] {
  * validated first — a missing/empty/malformed value falls back to
  * flag_for_review-style language rather than rendering "undefined" or
  * crashing.
+ *
+ * IMPORTANT — this instruction is advisory only, never enforced. Nothing in
+ * `runAgentQuery` checks that the model actually applied the configured
+ * strategy, resolved a real disagreement correctly, or emitted a
+ * `[conflict: ...]` tag at all. The only structural check that exists is
+ * citation *existence*: any chunk id inside a `[conflict: ...]` tag is
+ * verified against ids `search_evidence` actually returned this run, exactly
+ * like a bare `[chunk:id]` citation — that catches a hallucinated chunk id,
+ * not a wrong or silently-skipped conflict resolution. A model that ignores
+ * this instruction entirely still produces a successfully completed run.
  */
 export function renderPolicyInstruction(policy: ConflictPolicy): string {
   if (policy.strategy === 'most_recent') {

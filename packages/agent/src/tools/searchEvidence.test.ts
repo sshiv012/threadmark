@@ -180,7 +180,7 @@ describe('search_evidence tool', () => {
     expect(search).not.toHaveBeenCalled();
   });
 
-  it('returns a real result shape (chunkId/documentTitle/snippet/score) on success', async () => {
+  it('returns a real result shape (chunkId/documentTitle/snippet/score/sourceType) on success', async () => {
     const tool = createSearchEvidenceTool(
       {
         retriever: fakeRetriever(async () => ({
@@ -209,7 +209,13 @@ describe('search_evidence tool', () => {
     );
     expect(output).toMatchObject({
       results: [
-        { chunkId: 'c1', documentTitle: 'Doc', score: 0.9, createdAt: '2026-01-01T00:00:00.000Z' },
+        {
+          chunkId: 'c1',
+          documentTitle: 'Doc',
+          score: 0.9,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sourceType: 'product_doc',
+        },
       ],
     });
     expect(

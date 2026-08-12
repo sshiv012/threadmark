@@ -172,6 +172,8 @@ export async function runAgentQuery(
     workspaceId,
   );
 
+  // renderPolicyInstruction's output is advisory only — see its docstring.
+  // Nothing here verifies the model actually followed it.
   const policy = await safeFetchPolicy(deps.db, workspaceId);
   const system = `${PERSONA_PROMPT} ${renderPolicyInstruction(policy)}`;
 
