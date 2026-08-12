@@ -45,10 +45,13 @@ const bodySchema = z
     strategy: z.enum(['most_recent', 'highest_priority_source', 'flag_for_review']),
     config: z.record(z.string(), z.unknown()).optional(),
   })
-  .refine((body) => JSON.stringify(body.config ?? {}).length <= MAX_CONFIG_JSON_BYTES, {
-    message: 'config payload is too large',
-    path: ['config'],
-  })
+  .refine(
+    (body) => Buffer.byteLength(JSON.stringify(body.config ?? {}), 'utf8') <= MAX_CONFIG_JSON_BYTES,
+    {
+      message: 'config payload is too large',
+      path: ['config'],
+    },
+  )
   .refine(
     (body) =>
       body.strategy !== 'highest_priority_source' ||
