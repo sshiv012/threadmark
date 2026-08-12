@@ -6,8 +6,12 @@ placeholder (`APP_NAME` export only); no `prd`/`prd_branch`/`prd_block`/`citatio
 requires before any of that code gets written, and doubles as the phased delivery
 plan for the PRs that will implement it.
 
-Items marked **[NEEDS DECISION]** are proposed defaults, not settled — call them
-out explicitly during review rather than silently building against them.
+All design decisions in this doc are settled as of 2026-08-11 (`prd:manage` is
+owner+editor; merge preserves block identity, never re-points; a Hocuspocus
+restart accepts bounded edit loss for v1; JWT expiry mid-session triggers a
+periodic re-auth disconnect) — none are marked `[NEEDS DECISION]` anymore.
+Anything discovered during implementation that contradicts this doc should be
+raised as a doc update, not silently built around.
 
 ## 1. Scope
 
@@ -70,28 +74,61 @@ export const prdBranches = pgTable(
   ],
 );
 
+// A block's stable identity, shared across EVERY branch of its PRD — never
+// branch-scoped. This is what makes "preserve id across merge" (§5, decided)
+// trivial rather than requiring re-pointing logic: identity lives here,
+// per-branch presence/ordering lives in prdBranchBlocks, per-branch content
+// lives in prdBlockVersions. Forking a branch copies prdBranchBlocks rows
+// (new branchId, SAME blockId) — identity survives the fork for free.
 export const prdBlocks = pgTable(
   'prd_blocks',
   {
-    id: uuid('id').primaryKey().defaultRandom(), // stable across edits — citations/comments pin to this
+    id: uuid('id').primaryKey().defaultRandom(),
+    prdId: uuid('prd_id')
+      .notNull()
+      .references(() => prds.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(), // 'heading' | 'paragraph' | 'list_item' | ... — free text, like chunks/eval configName precedent
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('prd_blocks_prd_idx').on(t.prdId)],
+);
+
+// Per-branch membership + display order + presence. A block absent from
+// this table (or removedAt set) for branch X simply isn't part of X's
+// current document — it may still be very much present on other branches.
+export const prdBranchBlocks = pgTable(
+  'prd_branch_blocks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
     branchId: uuid('branch_id')
       .notNull()
       .references(() => prdBranches.id, { onDelete: 'cascade' }),
+    blockId: uuid('block_id')
+      .notNull()
+      .references(() => prdBlocks.id, { onDelete: 'cascade' }),
     ord: integer('ord').notNull(), // display position within the branch; NOT identity (mirrors chunks.ord)
-    type: text('type').notNull(), // 'heading' | 'paragraph' | 'list_item' | ... — free text, like chunks/eval configName precedent
-    // Soft-delete: a removed block is tombstoned, never hard-deleted, so
-    // existing citations/comments/versions stay resolvable. [NEEDS DECISION]
-    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    // Soft-delete FROM THIS BRANCH ONLY, never hard-deleted — matches this
+    // codebase's existing "never silently drop" convention (evidence
+    // documents, memberships, agent steps). The block itself (prd_blocks
+    // row) is untouched; it may still be live on other branches.
+    removedAt: timestamp('removed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('prd_blocks_branch_idx').on(t.branchId),
-    uniqueIndex('prd_blocks_branch_ord_uniq')
+    index('prd_branch_blocks_branch_idx').on(t.branchId),
+    uniqueIndex('prd_branch_blocks_branch_block_uniq').on(t.branchId, t.blockId),
+    uniqueIndex('prd_branch_blocks_branch_ord_uniq')
       .on(t.branchId, t.ord)
-      .where(sql`deleted_at IS NULL`),
+      .where(sql`removed_at IS NULL`),
   ],
 );
 
+// Content is branch-scoped — the same logical block can genuinely diverge
+// in content across two branches before a merge reconciles them. A merge
+// (§5, decided) appends a version here using the EXACT SAME call path a
+// live edit already uses (appendPrdBlockVersion), so merged content lands
+// on the target branch's existing block identity automatically — nothing
+// is ever re-pointed.
 export const prdBlockVersions = pgTable(
   'prd_block_versions',
   {
@@ -99,6 +136,9 @@ export const prdBlockVersions = pgTable(
     blockId: uuid('block_id')
       .notNull()
       .references(() => prdBlocks.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => prdBranches.id, { onDelete: 'cascade' }),
     content: text('content').notNull(), // reconciled Yjs → plain/rich text at flush time
     contentHash: text('content_hash').notNull(), // skip-if-unchanged, mirrors upsertChunks' contentHash
     // Who produced this version — reuses Principal shape, not a new concept.
@@ -106,7 +146,7 @@ export const prdBlockVersions = pgTable(
     authorSubjectId: text('author_subject_id').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('prd_block_versions_block_idx').on(t.blockId, t.createdAt)],
+  (t) => [index('prd_block_versions_block_branch_idx').on(t.blockId, t.branchId, t.createdAt)],
 );
 
 // Durable natural key, NOT chunks.id — chunks.id is regenerated on
@@ -118,6 +158,8 @@ export const citations = pgTable(
   'citations',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    // Pinned to a specific (block, branch, point-in-time) version — never
+    // the live, still-mutable block.
     blockVersionId: uuid('block_version_id')
       .notNull()
       .references(() => prdBlockVersions.id, { onDelete: 'cascade' }),
@@ -130,6 +172,10 @@ export const citations = pgTable(
   (t) => [index('citations_block_version_idx').on(t.blockVersionId)],
 );
 
+// Branch-scoped like prdBlockVersions: a comment is a discussion about a
+// SPECIFIC branch's current state of a block, not a universal property of
+// the block's identity — two branches that have diverged in content
+// shouldn't share a comment thread silently.
 export const comments = pgTable(
   'comments',
   {
@@ -137,6 +183,9 @@ export const comments = pgTable(
     blockId: uuid('block_id')
       .notNull()
       .references(() => prdBlocks.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => prdBranches.id, { onDelete: 'cascade' }),
     parentCommentId: uuid('parent_comment_id').references(() => comments.id, {
       onDelete: 'cascade',
     }),
@@ -146,18 +195,19 @@ export const comments = pgTable(
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('comments_block_idx').on(t.blockId)],
+  (t) => [index('comments_block_branch_idx').on(t.blockId, t.branchId)],
 );
 ```
 
 Repository function names follow the existing convention exactly (confirmed
 against `packages/db/src/repositories.ts`'s current `create<X>`/`get<X>`/
 `list<Plural>By<Scope>`/`upsert<X>`/`append<X>` pattern): `createPrd`,
-`listPrdsByWorkspace`, `createPrdBranch`, `getPrdBranch`, `upsertPrdBlock`
-(content-hash-skip like `upsertChunks`), `appendPrdBlockVersion`,
-`createCitation`, `createComment`, `listCommentsByBlock`, `resolveCitation`
-(→ live chunk via `(documentId, chunkSourceKey)`, mirroring evals'
-`resolveRelevanceMap` pattern exactly).
+`listPrdsByWorkspace`, `createPrdBranch`, `getPrdBranch`, `listBranchBlocks`
+(→ join `prdBranchBlocks`+`prdBlocks`, ordered, excluding `removedAt`),
+`upsertPrdBlock` (content-hash-skip like `upsertChunks`),
+`appendPrdBlockVersion`, `createCitation`, `createComment`,
+`listCommentsByBlock`, `resolveCitation` (→ live chunk via `(documentId,
+chunkSourceKey)`, mirroring evals' `resolveRelevanceMap` pattern exactly).
 
 ## 3. CRDT / real-time layer (Yjs + Hocuspocus)
 
@@ -182,15 +232,17 @@ against `packages/db/src/repositories.ts`'s current `create<X>`/`get<X>`/
   workspace is rejected at this hook — the connection never reaches the Y.Doc
   merge step.** This is the single most important test in this whole design
   (§9, multi-tenant isolation).
-- **`onLoadDocument`**: when the first client connects for a branch, load the
-  latest `prd_blocks`/`prd_block_versions` state and materialize it into a
-  fresh `Y.Doc` before the client's own state syncs in.
+- **`onLoadDocument`**: when the first client connects for a branch, load
+  `listBranchBlocks(branchId)` (ordered, excluding `removedAt`) plus each
+  block's latest `prd_block_versions` row for that branch, and materialize
+  it into a fresh `Y.Doc` before the client's own state syncs in.
 - **`onStoreDocument`**: debounced (proposed 3s of inactivity, or every 30s
   under continuous editing, whichever comes first — tunable, not hardcoded).
   Walks the current `Y.Doc`'s blocks, calls `upsertPrdBlock` per block
-  (ord/content, content-hash-skip), and `appendPrdBlockVersion` only when a
-  block's content-hash actually changed since the last version — exactly
-  `upsertChunks`' existing skip-if-unchanged behavior, reapplied here.
+  (ord/presence in `prd_branch_blocks`, content-hash-skip), and
+  `appendPrdBlockVersion` only when a block's content-hash actually changed
+  since the last version on this branch — exactly `upsertChunks`' existing
+  skip-if-unchanged behavior, reapplied here.
 - **Awareness**: presence (cursor, selection, display name) via Yjs's
   standard awareness protocol. An active agent-persona run (e.g. a future
   PRD-drafting agent) publishes itself as an awareness participant too, so
@@ -214,22 +266,24 @@ decision, not a row-ownership check" rule this repo already follows for
 `evidence_document`/`agent_run`).
 
 New `Action` values: `prd:read`, `prd:write`, `prd:comment`, `prd:branch`,
-`prd:merge`, `prd:manage` (archive/rename/delete a PRD — same tier as
-`workspace:manage_members`).
+`prd:merge`, `prd:manage` (archive/rename/delete a PRD).
 
-Proposed `ROLE_ACTIONS` additions (extending the existing map, not replacing
-it):
+`ROLE_ACTIONS` additions (extending the existing map, not replacing it):
 
 | Role      | prd:read | prd:comment | prd:write | prd:branch | prd:merge | prd:manage |
 | --------- | -------- | ----------- | --------- | ---------- | --------- | ---------- |
 | owner     | ✓        | ✓           | ✓         | ✓          | ✓         | ✓          |
-| editor    | ✓        | ✓           | ✓         | ✓          | ✓         |            |
+| editor    | ✓        | ✓           | ✓         | ✓          | ✓         | ✓          |
 | commenter | ✓        | ✓           |           |            |           |            |
 | viewer    | ✓        |             |           |            |           |            |
 
-**[NEEDS DECISION]** `prd:manage` restricted to `owner` only, or `owner`+`editor`?
-Proposed: owner-only, matching `workspace:manage_members`'s precedent that
-identity/structural-authority actions sit one tier above content authority.
+**Decided**: `prd:manage` is owner+editor, unlike `workspace:manage_members`
+(owner-only). Editors already hold write/branch/merge — archiving/renaming/
+deleting a PRD isn't a bigger trust jump for them than those, so this stays a
+two-tier model (content-authority roles vs. read-only roles) rather than
+introducing a third tier just for this one action. `workspace:manage_members`
+itself is untouched by this — that action is a workspace-identity concern,
+orthogonal to PRD content authority, and stays owner-only per PR8.
 
 **Agent-persona participation**: `agent_persona` principals get `prd:write`
 and `prd:comment` (a drafting/suggestion agent is core to the product,
@@ -242,21 +296,30 @@ regardless of its assigned role.
 
 ## 5. Branching & versioning semantics
 
-- A branch is a **fork of the block list at a point in time** (git-like in
-  spirit, deliberately simpler in mechanics: fork → independent linear edit →
-  explicit merge-back). No cherry-picking, no rebasing.
+- A branch is a **fork of the block list at a point in time**: forking copies
+  `prdBranchBlocks` rows (same `blockId`s, new `branchId`) into the new
+  branch (git-like in spirit, deliberately simpler in mechanics: fork →
+  independent linear edit → explicit merge-back; no cherry-picking, no
+  rebasing).
 - **Merge is a human-reviewed action, not a CRDT operation.** Yjs's CRDT
   guarantees convergence for concurrent edits _within one shared document_ —
   it says nothing about reconciling two independently-forked lineages, which
   is a structural/semantic problem CRDT doesn't solve. Merging branch B back
   into branch A is presented as a block-level diff (added/changed/removed
-  blocks by `blockId`) for a human with `prd:merge` to accept — never silently
-  auto-applied. **[NEEDS DECISION]**: does an accepted merge create new
-  `prd_block_versions` on the target branch's existing block rows (content
-  update, id preserved) or literally re-point blocks from B onto A (id
-  changes)? Proposed: former — preserves citation/comment continuity across
-  merges, at the cost of the merge algorithm needing real diff logic instead
-  of a raw copy.
+  blocks by `blockId`) for a human with `prd:merge` to accept — never
+  silently auto-applied.
+- **Decided: block identity is preserved across a merge, never re-pointed.**
+  This falls out of the schema in §2 rather than needing special merge-time
+  logic: since a block's `id` was never branch-scoped to begin with, "merge"
+  is just — for each `blockId` where A and B's latest content differs —
+  calling `appendPrdBlockVersion(blockId, branchId=A, content=B's content)`,
+  the exact same call a live edit already makes. Citations and comments
+  already attached to A's blocks are untouched by the merge, because nothing
+  about the block's identity changed. A block newly created on B (no
+  `prdBranchBlocks` row yet on A) gets one inserted, ordered at the position
+  the diff view showed; a block removed on B sets `removedAt` on A's
+  `prdBranchBlocks` row for it, per the human's reviewed choice — the block
+  itself is never deleted, only its presence on that one branch.
 - Version granularity is per-block, content-hash-deduped, created at each
   debounced flush — not per-keystroke. A block edited 200 times in one
   30-second burst produces one version row, not 200.
@@ -285,16 +348,15 @@ a silent pass.
   before the drop are not rolled back (CRDT has no partial-edit undo).
 - **Hocuspocus process restart**: `onLoadDocument` rehydrates from the last
   _persisted_ state. Edits made since the last debounced flush before the
-  restart are lost. **[NEEDS DECISION]**: accept this v1 limitation
-  (bounded by the debounce window, e.g. ≤30s of loss) or add a client-side
-  buffer that replays unacknowledged updates after reconnect? Proposed:
-  accept the bounded loss for v1, revisit if it proves painful in practice.
+  restart are lost. **Decided: accept this v1 limitation**, bounded by the
+  debounce window (e.g. ≤30s of loss) — no client-side replay buffer for v1.
+  Revisit only if this proves painful in practice; a restart is rare, and
+  the loss window is small by construction.
 - **JWT expiry mid-session**: a WS connection authenticated once at connect
-  time doesn't automatically re-check auth as the JWT ages. **[NEEDS
-  DECISION]**: periodic re-auth check (e.g. every 5 min, disconnect on
-  failure) vs. accept that a session can outlive its JWT until the client
-  disconnects. Proposed: periodic re-auth check, since a revoked/demoted
-  membership should take effect within a bounded window, not "whenever this
+  time doesn't automatically re-check auth as the JWT ages. **Decided:
+  periodic re-auth check** (proposed every 5 min — tunable, not a fixed
+  constant), disconnecting the client on failure. A revoked/demoted
+  membership takes effect within that bounded window, not "whenever this
   tab happens to reload."
 - **Malformed/oversized Yjs update from a compromised or buggy client**:
   Hocuspocus doesn't validate CRDT update _semantics_ — the persistence-layer
@@ -344,7 +406,8 @@ Grouped by this repo's own mandatory categories (`test-plan` skill).
   clients connected to the same branch see each other's edits without a
   Postgres round trip.
 - `apps/collab` [integration] → a debounced flush persists current Yjs
-  content into `prd_blocks`/`prd_block_versions` with correct ord/content.
+  content into `prd_branch_blocks`/`prd_block_versions` with correct
+  ord/content.
 - `apps/collab` [integration] → an agent-persona-authored block round-trips
   with `authorKind: 'agent_persona'`, otherwise identical shape to a human's.
 
@@ -371,8 +434,9 @@ chunkSourceKey)` that no longer resolves to a live chunk is flagged stale,
 - `packages/db` [pglite] → an empty branch (zero blocks) round-trips without
   crashing; a branch forked from an empty branch is also empty, not an error.
 - `packages/db` [pglite] → two concurrent block-inserts racing for the same
-  `ord` resolve deterministically with no duplicate `ord` under the
-  `deletedAt IS NULL` partial unique index.
+  `ord` on the same branch resolve deterministically with no duplicate `ord`
+  under `prd_branch_blocks_branch_ord_uniq`'s `removed_at IS NULL` partial
+  unique index.
 - `packages/db` [pglite] → a deeply nested comment thread (e.g. 50 levels)
   doesn't stack-overflow a recursive listing — bounded depth or iterative
   resolution.
@@ -406,9 +470,9 @@ chunkSourceKey)` that no longer resolves to a live chunk is flagged stale,
 - `apps/collab` [integration] → a client disconnecting mid-edit clears its
   awareness entry; already-applied updates before the drop remain applied
   (no rollback).
-- `apps/collab` [integration, whichever §7 JWT-expiry decision is made] →
-  either: a connection is force-disconnected on the next re-auth interval
-  after its JWT expires, or: explicitly document and test that it is not.
+- `apps/collab` [integration] → a connection whose JWT has expired is
+  force-disconnected on the next periodic re-auth check (§7, decided), not
+  left open until the client happens to disconnect on its own.
 
 ### State filtering
 
@@ -423,13 +487,21 @@ chunkSourceKey)` that no longer resolves to a live chunk is flagged stale,
 - `packages/db` [pglite] → editing a block's content preserves its `id`
   across versions — citations/comments made against an earlier version still
   resolve to the same block.
-- `packages/db` [pglite] → "deleting" a block sets `deletedAt`, never a hard
-  delete; existing citations/comments/versions against it remain resolvable
-  (rendered as "this block was removed," not a broken foreign key).
+- `packages/db` [pglite] → removing a block from a branch sets
+  `prd_branch_blocks.removedAt`, never a hard delete of the `prd_blocks` row
+  — existing citations/comments/versions against it remain resolvable
+  (rendered as "this block was removed from this branch," not a broken
+  foreign key), and the same block can still be present and live on another
+  branch that never removed it.
 - `packages/db` [pglite] → re-ingesting the underlying evidence document
   (content changes, `chunks.id` regenerates) leaves existing citations
   resolvable via `(documentId, chunkSourceKey)` — the exact scenario this
   key choice exists to survive (§6).
+- `packages/db` [pglite] → merging branch B into branch A (§5, decided)
+  appends new `prd_block_versions` rows on A's existing `blockId`s — a
+  citation created against A's pre-merge version still resolves to the same
+  `blockId`, and a NEW citation created after the merge against A's
+  post-merge version is a distinct row, not a mutation of the old one.
 
 ### Version / config drift
 
