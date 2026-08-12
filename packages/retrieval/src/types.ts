@@ -12,6 +12,12 @@ export interface RetrievedChunk {
   vectorRank?: number;
   /** 1-based rank in the BM25 list (undefined if it wasn't a lexical hit). */
   lexicalRank?: number;
+  /** The owning document's ingestion time, ISO-8601 — a weak proxy for
+   *  "most recent" (a stale document re-ingested today looks newest); used
+   *  by packages/agent's `most_recent` conflict-resolution strategy. Typed
+   *  as a string (not `Date`) so a JSON-serializing cache (RedisCache)
+   *  can't silently turn it into a string only on a cache hit. */
+  createdAt: string;
 }
 
 export interface RetrievalResult {

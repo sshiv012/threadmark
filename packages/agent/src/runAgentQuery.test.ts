@@ -30,6 +30,7 @@ function chunk(overrides: Partial<RetrievedChunk> & { chunkId: string }): Retrie
     sourceType: 'product_doc',
     text: 'evidence text',
     rerankScore: 0.9,
+    createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
 }
@@ -182,6 +183,46 @@ describe('runAgentQuery', () => {
     });
   });
 
+  describe('conflict-resolution policy in the persona prompt', () => {
+    it('the system prompt sent to the model includes the flag_for_review instruction when no db is wired (the safe default)', async () => {
+      const model = new MockLanguageModelV4({ doGenerate: async () => textStep('answer') });
+      const deps: AgentQueryDeps = { retriever: fakeRetriever(vi.fn()), model };
+
+      await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      const systemMessage = model.doGenerateCalls[0]!.prompt.find((m) => m.role === 'system');
+      expect(systemMessage!.content).toMatch(/do not pick one/);
+    });
+
+    it('[documented limitation] the policy instruction is advisory only — a model that ignores it outright (no conflict tag, no mention of disagreeing sources) still produces a completed run, not an error', async () => {
+      const search = vi.fn(async () => ({
+        query: 'q',
+        cached: false,
+        latencyMs: 1,
+        results: [chunk({ chunkId: 'c1' }), chunk({ chunkId: 'c2' })],
+      }));
+      let callCount = 0;
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          callCount += 1;
+          return callCount === 1
+            ? toolCallStep('q')
+            : // Violates flag_for_review outright: picks one source silently,
+              // names no disagreeing source, emits no [conflict: ...] tag —
+              // nothing here rejects the run or the answer.
+              textStep('The tax rate is 8%. [chunk:c1]');
+        },
+      });
+      const deps: AgentQueryDeps = { retriever: fakeRetriever(search), model };
+
+      const answer = await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      expect(answer.answer).toBe('The tax rate is 8%. [chunk:c1]');
+      expect(answer.citedChunkIds).toEqual(['c1']);
+      expect(answer.unverifiedCitations).toEqual([]);
+    });
+  });
+
   describe('negative / adversarial', () => {
     it('does not crash when a cross-tenant principal makes can() deny the tool, and still returns an answer', async () => {
       const search = vi.fn();
@@ -239,6 +280,58 @@ describe('runAgentQuery', () => {
       expect(answer.toolCalled).toBe(false);
       expect(answer.citedChunkIds).toEqual([]);
       expect(answer.unverifiedCitations).toEqual(['c1']);
+    });
+
+    it('a [conflict: ...] tag citing a chunk id never returned by search_evidence this run lands the hallucinated id in unverifiedCitations', async () => {
+      const search = vi.fn(async () => ({
+        query: 'q',
+        cached: false,
+        latencyMs: 1,
+        results: [chunk({ chunkId: 'c1' })],
+      }));
+      let callCount = 0;
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          callCount += 1;
+          return callCount === 1
+            ? toolCallStep('q')
+            : textStep(
+                'Rates differ [conflict: chunk:c1 vs chunk:ghost → resolved chunk:c1 via most_recent].',
+              );
+        },
+      });
+      const deps: AgentQueryDeps = { retriever: fakeRetriever(search), model };
+
+      const answer = await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      expect(answer.citedChunkIds).toEqual(['c1']);
+      expect(answer.unverifiedCitations).toEqual(['ghost']);
+    });
+
+    it('a conflict tag where every cited chunk id WAS returned this run produces no unverifiedCitations entries', async () => {
+      const search = vi.fn(async () => ({
+        query: 'q',
+        cached: false,
+        latencyMs: 1,
+        results: [chunk({ chunkId: 'c1' }), chunk({ chunkId: 'c2' })],
+      }));
+      let callCount = 0;
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          callCount += 1;
+          return callCount === 1
+            ? toolCallStep('q')
+            : textStep(
+                'Rates differ [conflict: chunk:c1 vs chunk:c2 → resolved chunk:c1 via most_recent].',
+              );
+        },
+      });
+      const deps: AgentQueryDeps = { retriever: fakeRetriever(search), model };
+
+      const answer = await runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?');
+
+      expect(new Set(answer.citedChunkIds)).toEqual(new Set(['c1', 'c2']));
+      expect(answer.unverifiedCitations).toEqual([]);
     });
 
     it('surfaces a RetrievalValidationError (empty tool-generated query) as a graceful tool-error, without crashing the run', async () => {
