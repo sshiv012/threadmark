@@ -192,6 +192,7 @@ export function createRetriever(deps: RetrieverDeps): Retriever {
               documentTitle: row.documentTitle,
               sourceType: row.sourceType,
               text: row.text,
+              createdAt: row.createdAt,
               rerankScore: r.score,
               ...(vectorRank.has(r.id) ? { vectorRank: vectorRank.get(r.id)! } : {}),
               ...(lexicalRank.has(r.id) ? { lexicalRank: lexicalRank.get(r.id)! } : {}),

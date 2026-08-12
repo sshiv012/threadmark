@@ -3,6 +3,7 @@ import { createAgentRun, updateAgentRunStatus, type AgentRun, type Database } fr
 import type { Retriever } from '@threadmark/retrieval';
 import { generateText, stepCountIs, type LanguageModel } from 'ai';
 import { createDbStepRecorder } from './dbStepRecorder.js';
+import { fetchConflictPolicy, renderPolicyInstruction, type ConflictPolicy } from './policy.js';
 import { createSearchEvidenceTool, SearchEvidenceToolError } from './tools/searchEvidence.js';
 import type { AgentAnswer, RecordedStep, StepErrorCode, StepRecorder } from './types.js';
 
@@ -23,7 +24,15 @@ export interface AgentQueryDeps {
 // model insists on calling the tool repeatedly.
 const MAX_MODEL_STEPS = 5;
 
-const CITATION_PATTERN = /\[chunk:([^\]\s]+)\]/g;
+// Matches a chunk id anywhere it's cited — a bare `[chunk:id]` marker AND
+// every `chunk:id` occurrence embedded inside a `[conflict: chunk:A vs
+// chunk:B → resolved chunk:A via <strategy>]` tag (PR11). Unifying the two
+// means conflict tags need no separate parsing path: every chunk id
+// mentioned anywhere is verified against what search_evidence actually
+// returned this run, the exact same way a bare citation already was.
+const CITATION_PATTERN = /chunk:([^\]\s,]+)/g;
+
+const DEFAULT_CONFLICT_POLICY: ConflictPolicy = { strategy: 'flag_for_review', config: {} };
 
 const PERSONA_PROMPT =
   'You are a research assistant answering questions using only the workspace evidence corpus. ' +
@@ -41,6 +50,28 @@ function extractCitations(text: string): string[] {
     if (id) ids.add(id);
   }
   return [...ids];
+}
+
+/** The conflict-resolution policy is fetched FRESH from Postgres on every
+ *  call — deliberately no cache, so a PATCH takes effect on the very next
+ *  call with no restart. Best-effort like the run/step observability
+ *  writes: a DB-unreachable read falls back to the safest default
+ *  (flag_for_review) rather than failing the run — this is advisory
+ *  framing for the answer, not the evidence the answer is built on (unlike
+ *  an infrastructure_error from search_evidence, which DOES fail the run).
+ *  No `db` at all (unit tests that don't wire one) skips the read entirely
+ *  and uses the same default. */
+async function safeFetchPolicy(
+  db: Database | undefined,
+  workspaceId: string,
+): Promise<ConflictPolicy> {
+  if (!db) return DEFAULT_CONFLICT_POLICY;
+  try {
+    return await fetchConflictPolicy(db, workspaceId);
+  } catch (error) {
+    console.warn('[agent] fetchConflictPolicy threw, falling back to flag_for_review:', error);
+    return DEFAULT_CONFLICT_POLICY;
+  }
 }
 
 /** Observability is best-effort: a broken recorder must never fail an
@@ -141,6 +172,11 @@ export async function runAgentQuery(
     workspaceId,
   );
 
+  // renderPolicyInstruction's output is advisory only — see its docstring.
+  // Nothing here verifies the model actually followed it.
+  const policy = await safeFetchPolicy(deps.db, workspaceId);
+  const system = `${PERSONA_PROMPT} ${renderPolicyInstruction(policy)}`;
+
   // Everything from here on is wrapped in one try/catch so that ANY
   // rejection — generateText() itself throwing (a provider timeout, a
   // rejected request, ...), an unexpected error while processing steps, or
@@ -151,7 +187,7 @@ export async function runAgentQuery(
   try {
     const result = await generateText({
       model: deps.model,
-      system: PERSONA_PROMPT,
+      system,
       prompt: question,
       tools: { search_evidence: searchEvidence },
       stopWhen: stepCountIs(MAX_MODEL_STEPS),

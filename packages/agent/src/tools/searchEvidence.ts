@@ -1,4 +1,5 @@
 import { can, type Principal } from '@threadmark/core';
+import type { EvidenceSourceType } from '@threadmark/db';
 import { RetrievalValidationError, type Retriever } from '@threadmark/retrieval';
 import { tool, type Tool } from 'ai';
 import { z } from 'zod';
@@ -13,6 +14,12 @@ export interface SearchEvidenceResultItem {
   documentTitle: string;
   snippet: string;
   score: number;
+  /** ISO-8601 ingestion time of the owning document — lets the persona
+   *  apply a `most_recent` conflict-resolution strategy when instructed to. */
+  createdAt: string;
+  /** Lets the persona apply a `highest_priority_source` conflict-resolution
+   *  strategy, which ranks by source type via `config.sourceTypePriority`. */
+  sourceType: EvidenceSourceType;
 }
 
 export interface SearchEvidenceOutput {
@@ -95,6 +102,8 @@ export function createSearchEvidenceTool(
           documentTitle: r.documentTitle,
           snippet: r.text.slice(0, SNIPPET_MAX_LENGTH),
           score: r.rerankScore,
+          createdAt: r.createdAt,
+          sourceType: r.sourceType,
         })),
       };
     },
