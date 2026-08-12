@@ -29,6 +29,7 @@ const mockAppendAgentStep = vi.mocked(appendAgentStep);
 
 const FAKE_DB = {} as Database;
 const WORKSPACE_A = 'workspace-a';
+const WORKSPACE_B = 'workspace-b';
 
 const USAGE = {
   inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
@@ -78,6 +79,39 @@ beforeEach(() => {
 });
 
 describe('runAgentQuery — best-effort DB observability', () => {
+  it('never calls createAgentRun for a cross-tenant principal, even when db is provided — the upfront authorization gate skips the DB write entirely rather than writing then relying on the tool to deny', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => textStep("I couldn't retrieve evidence for this workspace."),
+    });
+    const deps: AgentQueryDeps = { retriever: fakeRetriever(vi.fn()), model, db: FAKE_DB };
+
+    // principal belongs to workspace B, call targets workspace A.
+    await runAgentQuery(deps, agentPrincipal(WORKSPACE_B), WORKSPACE_A, 'q?');
+
+    expect(mockCreateAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('marks the run failed when generateText() itself rejects, and still propagates the ORIGINAL error even if updateAgentRunStatus also fails', async () => {
+    mockUpdateAgentRunStatus.mockRejectedValueOnce(new Error('DB unreachable'));
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+    });
+    const deps: AgentQueryDeps = { retriever: fakeRetriever(vi.fn()), model, db: FAKE_DB };
+
+    await expect(
+      runAgentQuery(deps, agentPrincipal(WORKSPACE_A), WORKSPACE_A, 'q?'),
+    ).rejects.toThrow('ECONNREFUSED');
+
+    expect(mockUpdateAgentRunStatus).toHaveBeenCalledWith(
+      FAKE_DB,
+      'run-1',
+      'failed',
+      expect.any(Date),
+    );
+  });
+
   it('still returns a valid answer when createAgentRun throws at the very start (DB unreachable)', async () => {
     mockCreateAgentRun.mockRejectedValueOnce(new Error('DB unreachable'));
     const model = new MockLanguageModelV4({

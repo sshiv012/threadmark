@@ -11,11 +11,11 @@ import {
   listAgentSteps,
   type Database,
 } from '@threadmark/db';
-import type { Retriever } from '@threadmark/retrieval';
+import { RetrievalValidationError, type Retriever } from '@threadmark/retrieval';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { MockLanguageModelV4 } from 'ai/test';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentQuery, type AgentQueryDeps } from './runAgentQuery.js';
 
 // Real Postgres (pglite) exercising the actual migration — proves FK
@@ -24,12 +24,17 @@ import { runAgentQuery, type AgentQueryDeps } from './runAgentQuery.js';
 const migrationsFolder = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 
 let db: Database;
+let pglite: PGlite;
 
 beforeEach(async () => {
-  const pg = new PGlite({ extensions: { vector } });
-  const pgliteDb = drizzle(pg, { schema: dbSchema });
+  pglite = new PGlite({ extensions: { vector } });
+  const pgliteDb = drizzle(pglite, { schema: dbSchema });
   await migrate(pgliteDb, { migrationsFolder });
   db = pgliteDb;
+});
+
+afterEach(async () => {
+  await pglite.close();
 });
 
 const USAGE = {
@@ -133,7 +138,7 @@ describe('runAgentQuery — real DB-backed observability', () => {
   });
 
   describe('multi-tenant isolation (hard gate)', () => {
-    it("a cross-tenant principal (principal.workspaceId=B, call workspaceId=A) writes agent_runs.workspaceId as A — the call target, never B, the principal's own workspace", async () => {
+    it("a cross-tenant principal (principal.workspaceId=B, call workspaceId=A) creates NO agent_runs row in EITHER workspace — the upfront authorization gate denies before createAgentRun ever runs, so there's no cross-tenant write to begin with", async () => {
       const wsA = await createWorkspace(db, { name: 'A' });
       const wsB = await createWorkspace(db, { name: 'B' });
       const search = vi.fn();
@@ -146,10 +151,11 @@ describe('runAgentQuery — real DB-backed observability', () => {
       });
       const deps: AgentQueryDeps = { retriever: fakeRetriever(search), model, db };
 
-      // principal belongs to workspace B, call targets workspace A — can()'s cross-tenant gate denies the tool.
-      await runAgentQuery(deps, agentPrincipal(wsB.id), wsA.id, 'q?');
+      // principal belongs to workspace B, call targets workspace A — can()'s cross-tenant gate denies.
+      const answer = await runAgentQuery(deps, agentPrincipal(wsB.id), wsA.id, 'q?');
 
-      expect(await listAgentRuns(db, wsA.id)).toHaveLength(1);
+      expect(answer.answer).toBe("couldn't retrieve evidence");
+      expect(await listAgentRuns(db, wsA.id)).toHaveLength(0);
       expect(await listAgentRuns(db, wsB.id)).toHaveLength(0);
     });
 
@@ -181,28 +187,52 @@ describe('runAgentQuery — real DB-backed observability', () => {
   });
 
   describe('failure / degradation — reflected in real run/step status', () => {
-    it('a can()-denial tool-call step is persisted as agent_steps.status=failed but agent_runs.status ends completed', async () => {
+    it('an invalid_query tool-call step (authorized, but the retriever rejects an empty query) is persisted as agent_steps.status=failed but agent_runs.status ends completed', async () => {
+      // authorization_denied can no longer be reached through this path: the
+      // upfront authorization gate now denies (and skips creating the run
+      // entirely — see the multi-tenant isolation tests above) before the
+      // tool would ever get a chance to deny it a second time. invalid_query
+      // exercises the identical "graceful failure, run still completes"
+      // mapping via a path the upfront gate doesn't touch.
       const workspace = await createWorkspace(db, { name: 'Acme' });
-      const otherWorkspace = await createWorkspace(db, { name: 'Other' });
-      const search = vi.fn();
+      const search = vi.fn(async () => {
+        throw new RetrievalValidationError('query must be a non-empty, non-whitespace string');
+      });
       let callCount = 0;
       const model = new MockLanguageModelV4({
         doGenerate: async () => {
           callCount += 1;
-          return callCount === 1 ? toolCallStep('q') : textStep("couldn't retrieve evidence");
+          return callCount === 1 ? toolCallStep('') : textStep("couldn't retrieve evidence");
         },
       });
       const deps: AgentQueryDeps = { retriever: fakeRetriever(search), model, db };
 
-      // principal belongs to a different workspace than the call target — can() denies.
-      await runAgentQuery(deps, agentPrincipal(otherWorkspace.id), workspace.id, 'q?');
+      await runAgentQuery(deps, agentPrincipal(workspace.id), workspace.id, 'q?');
 
       const [run] = await listAgentRuns(db, workspace.id);
       expect(run).toMatchObject({ status: 'completed' });
       const steps = await listAgentSteps(db, run!.id);
-      expect(steps[0]).toMatchObject({ status: 'failed', errorCode: 'authorization_denied' });
+      expect(steps[0]).toMatchObject({ status: 'failed', errorCode: 'invalid_query' });
       expect(steps[1]).toMatchObject({ status: 'completed', type: 'final_answer' });
-      expect(search).not.toHaveBeenCalled();
+      expect(search).toHaveBeenCalled();
+    });
+
+    it('a generateText() rejection (e.g. a provider/network failure) marks the run failed rather than leaving it stuck at "running"', async () => {
+      const workspace = await createWorkspace(db, { name: 'Acme' });
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          throw new Error('ECONNREFUSED');
+        },
+      });
+      const deps: AgentQueryDeps = { retriever: fakeRetriever(vi.fn()), model, db };
+
+      await expect(
+        runAgentQuery(deps, agentPrincipal(workspace.id), workspace.id, 'q?'),
+      ).rejects.toThrow('ECONNREFUSED');
+
+      const [run] = await listAgentRuns(db, workspace.id);
+      expect(run).toMatchObject({ status: 'failed' });
+      expect(run!.endedAt).not.toBeNull();
     });
 
     it('an infrastructure_error tool-call step is persisted as agent_steps.status=failed AND agent_runs.status ends failed with endedAt set', async () => {

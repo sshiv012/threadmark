@@ -177,8 +177,9 @@ export const agentRuns = pgTable(
     // The entity this run acts on (e.g. an evidence_document or prd id).
     // Nullable ONLY for kind='qa': a cited-Q&A run has no natural subject
     // entity the way ingestion (a document) or prd_generation (a prd) do.
-    // The check constraint below keeps every other kind required, same as
-    // before this column became nullable.
+    // The check constraint below enforces BOTH directions — required for
+    // every other kind (same as before this column became nullable) AND
+    // forbidden for 'qa', so a 'qa' row can never carry a stray subjectId.
     subjectId: uuid('subject_id'),
     status: agentRunStatus('status').notNull().default('running'),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
@@ -188,7 +189,7 @@ export const agentRuns = pgTable(
     index('agent_runs_workspace_idx').on(table.workspaceId),
     check(
       'agent_runs_subject_id_required_unless_qa',
-      sql`${table.kind} = 'qa' OR ${table.subjectId} IS NOT NULL`,
+      sql`(${table.kind} = 'qa' AND ${table.subjectId} IS NULL) OR (${table.kind} != 'qa' AND ${table.subjectId} IS NOT NULL)`,
     ),
   ],
 );

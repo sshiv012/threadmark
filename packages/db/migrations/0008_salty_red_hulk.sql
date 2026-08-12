@@ -1,0 +1,2 @@
+ALTER TABLE "agent_runs" DROP CONSTRAINT "agent_runs_subject_id_required_unless_qa";--> statement-breakpoint
+ALTER TABLE "agent_runs" ADD CONSTRAINT "agent_runs_subject_id_required_unless_qa" CHECK (("agent_runs"."kind" = 'qa' AND "agent_runs"."subject_id" IS NULL) OR ("agent_runs"."kind" != 'qa' AND "agent_runs"."subject_id" IS NOT NULL));

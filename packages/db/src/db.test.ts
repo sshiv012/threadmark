@@ -725,6 +725,13 @@ describe('agent runs and steps (observability)', () => {
     ).rejects.toThrow();
   });
 
+  it('rejects a non-null subjectId for kind="qa" (review regression: the check constraint enforces both directions, not just "non-qa requires a subject")', async () => {
+    const { workspace } = await seedWorkspaceAndUser();
+    await expect(
+      createAgentRun(db, { workspaceId: workspace.id, kind: 'qa', subjectId: workspace.id }),
+    ).rejects.toThrow();
+  });
+
   it('round-trips a step errorCode distinctly from a bare error message (review regression)', async () => {
     const run = await seedRun();
     const step = await appendAgentStep(db, { runId: run.id, ord: 0, type: 'search_evidence' });
