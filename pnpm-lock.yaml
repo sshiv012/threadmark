@@ -161,9 +161,15 @@ importers:
       '@threadmark/core':
         specifier: workspace:^
         version: link:../core
+      '@threadmark/db':
+        specifier: workspace:^
+        version: link:../db
       '@threadmark/retrieval':
         specifier: workspace:^
         version: link:../retrieval
+      '@threadmark/telemetry':
+        specifier: workspace:^
+        version: link:../telemetry
       ai:
         specifier: ^7.0.41
         version: 7.0.41(zod@4.4.3)
@@ -174,6 +180,15 @@ importers:
       '@ai-sdk/provider':
         specifier: ^4.0.4
         version: 4.0.4
+      '@electric-sql/pglite':
+        specifier: ^0.5.4
+        version: 0.5.4
+      '@electric-sql/pglite-pgvector':
+        specifier: ^0.0.5
+        version: 0.0.5(@electric-sql/pglite@0.5.4)
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@electric-sql/pglite@0.5.4)(@opentelemetry/api@1.9.1)(postgres@3.4.9)
 
   packages/blob:
     dependencies:

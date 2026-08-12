@@ -705,6 +705,55 @@ describe('agent runs and steps (observability)', () => {
     expect(steps[0]).toMatchObject({ attempt: 1, status: 'failed', error: 'provider timeout' });
     expect(steps[1]).toMatchObject({ attempt: 2, status: 'completed', outputSummary: '3 vectors' });
   });
+
+  it('creates a kind="qa" run with a null subjectId (review regression: no natural subject entity for Q&A runs)', async () => {
+    const { workspace } = await seedWorkspaceAndUser();
+    const run = await createAgentRun(db, {
+      workspaceId: workspace.id,
+      kind: 'qa',
+      subjectId: null,
+    });
+    expect(run.subjectId).toBeNull();
+    const after = await getAgentRun(db, run.id);
+    expect(after).toMatchObject({ kind: 'qa', subjectId: null });
+  });
+
+  it('rejects a null subjectId for any non-qa kind (review regression: check constraint)', async () => {
+    const { workspace } = await seedWorkspaceAndUser();
+    await expect(
+      createAgentRun(db, { workspaceId: workspace.id, kind: 'ingestion', subjectId: null }),
+    ).rejects.toThrow();
+  });
+
+  it('rejects a non-null subjectId for kind="qa" (review regression: the check constraint enforces both directions, not just "non-qa requires a subject")', async () => {
+    const { workspace } = await seedWorkspaceAndUser();
+    await expect(
+      createAgentRun(db, { workspaceId: workspace.id, kind: 'qa', subjectId: workspace.id }),
+    ).rejects.toThrow();
+  });
+
+  it('round-trips a step errorCode distinctly from a bare error message (review regression)', async () => {
+    const run = await seedRun();
+    const step = await appendAgentStep(db, { runId: run.id, ord: 0, type: 'search_evidence' });
+    await updateAgentStep(db, step.id, {
+      status: 'failed',
+      error: 'not authorized to read evidence in this workspace',
+      errorCode: 'authorization_denied',
+    });
+
+    const [after] = await listAgentSteps(db, run.id);
+    expect(after).toMatchObject({ status: 'failed', errorCode: 'authorization_denied' });
+
+    const infraStep = await appendAgentStep(db, { runId: run.id, ord: 1, type: 'search_evidence' });
+    await updateAgentStep(db, infraStep.id, {
+      status: 'failed',
+      error: 'ECONNREFUSED',
+      errorCode: 'infrastructure_error',
+    });
+    const steps = await listAgentSteps(db, run.id);
+    expect(steps[1]!.errorCode).toBe('infrastructure_error');
+    expect(steps[1]!.errorCode).not.toBe(steps[0]!.errorCode);
+  });
 });
 
 describe('retrieval reads: workspace isolation + ready-only filtering', () => {
