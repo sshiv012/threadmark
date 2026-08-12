@@ -64,6 +64,13 @@
       "when": 1786495627750,
       "tag": "0008_salty_red_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786498201419,
+      "tag": "0009_loving_omega_sentinel",
+      "breakpoints": true
     }
   ]
 }
