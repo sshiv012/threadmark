@@ -11,6 +11,7 @@ const SAMPLE: RetrievedChunk[] = [
     sourceType: 'product_doc',
     text: 'hello',
     rerankScore: 0.9,
+    createdAt: '2026-01-15T10:00:00.000Z',
   },
 ];
 
@@ -28,6 +29,23 @@ describe('RedisCache', () => {
 
     await cache.set('k', SAMPLE);
     expect(await cache.get('k')).toEqual(SAMPLE);
+  });
+
+  it('round-trips createdAt as a correctly-formatted ISO string, not [object Object] or a corrupted value (review: JSON.stringify/parse must not silently turn a Date into a differently-shaped value)', async () => {
+    const store = new Map<string, string>();
+    const redis = {
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      set: vi.fn(async (key: string, value: string) => {
+        store.set(key, value);
+        return 'OK';
+      }),
+    } as unknown as Redis;
+    const cache = new RedisCache(redis);
+
+    await cache.set('k', SAMPLE);
+    const result = await cache.get('k');
+    expect(typeof result![0]!.createdAt).toBe('string');
+    expect(result![0]!.createdAt).toBe('2026-01-15T10:00:00.000Z');
   });
 
   it('fails open on a read error (returns null, does not throw)', async () => {

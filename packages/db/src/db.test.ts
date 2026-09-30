@@ -24,6 +24,7 @@ import {
   findWorkspaceByName,
   getAgentRun,
   getChunksByDocument,
+  getConflictPolicy,
   getEvidenceDocument,
   getMembership,
   getRetrievalChunksByIds,
@@ -41,6 +42,7 @@ import {
   updateAgentStep,
   updateDocumentStatus,
   upsertChunks,
+  upsertConflictPolicy,
   upsertEvalJudgment,
 } from './repositories.js';
 import { EMBEDDING_DIMENSIONS } from './schema.js';
@@ -756,6 +758,55 @@ describe('agent runs and steps (observability)', () => {
   });
 });
 
+describe('conflict-resolution policy (packages/agent)', () => {
+  it('returns the synthesized default (flag_for_review, {}) when no row exists', async () => {
+    const ws = await createWorkspace(db, { name: 'no-policy' });
+    expect(await getConflictPolicy(db, ws.id)).toEqual({ strategy: 'flag_for_review', config: {} });
+  });
+
+  it('upsertConflictPolicy inserts, then getConflictPolicy reflects it, for each strategy', async () => {
+    for (const strategy of ['most_recent', 'highest_priority_source', 'flag_for_review'] as const) {
+      const ws = await createWorkspace(db, { name: `policy-${strategy}` });
+      const config =
+        strategy === 'highest_priority_source' ? { sourceTypePriority: ['prior_prd'] } : {};
+      await upsertConflictPolicy(db, ws.id, { strategy, config });
+      expect(await getConflictPolicy(db, ws.id)).toEqual({ strategy, config });
+    }
+  });
+
+  it('a re-PATCH updates the existing row in place — exactly one row per workspace, not a duplicate', async () => {
+    const ws = await createWorkspace(db, { name: 'repatch' });
+    await upsertConflictPolicy(db, ws.id, { strategy: 'most_recent' });
+    await upsertConflictPolicy(db, ws.id, { strategy: 'flag_for_review' });
+
+    const rows = await db
+      .select()
+      .from(schema.conflictResolutionPolicies)
+      .where(eq(schema.conflictResolutionPolicies.workspaceId, ws.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ strategy: 'flag_for_review' });
+  });
+
+  it('two workspaces upserting different strategies never bleed into each other', async () => {
+    const wsA = await createWorkspace(db, { name: 'policy-A' });
+    const wsB = await createWorkspace(db, { name: 'policy-B' });
+    await upsertConflictPolicy(db, wsA.id, { strategy: 'most_recent' });
+    await upsertConflictPolicy(db, wsB.id, {
+      strategy: 'highest_priority_source',
+      config: { sourceTypePriority: ['product_doc'] },
+    });
+
+    expect((await getConflictPolicy(db, wsA.id)).strategy).toBe('most_recent');
+    expect((await getConflictPolicy(db, wsB.id)).strategy).toBe('highest_priority_source');
+  });
+
+  it('config defaults to {} when omitted for a no-config strategy', async () => {
+    const ws = await createWorkspace(db, { name: 'default-config' });
+    await upsertConflictPolicy(db, ws.id, { strategy: 'flag_for_review' });
+    expect((await getConflictPolicy(db, ws.id)).config).toEqual({});
+  });
+});
+
 describe('retrieval reads: workspace isolation + ready-only filtering', () => {
   function embeddingFor(seed: number): number[] {
     return Array.from({ length: EMBEDDING_DIMENSIONS }, (_, i) => ((i + seed) % 7) / 10);
@@ -845,6 +896,27 @@ describe('retrieval reads: workspace isolation + ready-only filtering', () => {
     it('returns empty for an empty id list without querying', async () => {
       const ws = await createWorkspace(db, { name: 'empty-ids' });
       expect(await getRetrievalChunksByIds(db, [], ws.id)).toEqual([]);
+    });
+
+    it('sources createdAt from evidence_documents.createdAt, NOT chunks.createdAt (review regression: both tables have their own createdAt column)', async () => {
+      const ws = await createWorkspace(db, { name: 'createdAt-source' });
+      const { chunkId } = await seedEmbeddedChunk(ws.id, 'ready', 40);
+      // Simulate the chunk being re-created (e.g. re-chunked) days after the
+      // document was originally ingested — the two createdAt values diverge.
+      await db.execute(
+        sql`UPDATE chunks SET created_at = '2020-01-01T00:00:00Z' WHERE id = ${chunkId}`,
+      );
+
+      const [row] = await getRetrievalChunksByIds(db, [chunkId], ws.id);
+      expect(row!.createdAt).not.toBe('2020-01-01T00:00:00.000Z');
+    });
+
+    it('returns createdAt as an ISO-8601 string, never a Date instance', async () => {
+      const ws = await createWorkspace(db, { name: 'createdAt-shape' });
+      const { chunkId } = await seedEmbeddedChunk(ws.id, 'ready', 41);
+      const [row] = await getRetrievalChunksByIds(db, [chunkId], ws.id);
+      expect(typeof row!.createdAt).toBe('string');
+      expect(row!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     });
   });
 

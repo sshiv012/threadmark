@@ -3,6 +3,7 @@ import type { Principal } from '@threadmark/core';
 import {
   appendAgentStep,
   createAgentRun,
+  getConflictPolicy,
   updateAgentRunStatus,
   type Database,
 } from '@threadmark/db';
@@ -12,20 +13,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentQuery, type AgentQueryDeps } from './runAgentQuery.js';
 
 // This file exercises runAgentQuery's DB-bracketing best-effort behavior —
-// createAgentRun/updateAgentRunStatus/appendAgentStep are mocked so we can
-// force them to reject without standing up a real database. See
-// runAgentQuery.integration.test.ts for the real-pglite-backed happy path
-// and isolation tests, which cannot share a file with this one (the mock
-// here would shadow the real implementation those tests need).
+// createAgentRun/updateAgentRunStatus/appendAgentStep/getConflictPolicy are
+// mocked so we can force them to reject without standing up a real
+// database. See runAgentQuery.integration.test.ts for the real-pglite-backed
+// happy path and isolation tests, which cannot share a file with this one
+// (the mock here would shadow the real implementation those tests need).
 vi.mock('@threadmark/db', () => ({
   createAgentRun: vi.fn(),
   updateAgentRunStatus: vi.fn(),
   appendAgentStep: vi.fn(),
+  getConflictPolicy: vi.fn(),
 }));
 
 const mockCreateAgentRun = vi.mocked(createAgentRun);
 const mockUpdateAgentRunStatus = vi.mocked(updateAgentRunStatus);
 const mockAppendAgentStep = vi.mocked(appendAgentStep);
+const mockGetConflictPolicy = vi.mocked(getConflictPolicy);
 
 const FAKE_DB = {} as Database;
 const WORKSPACE_A = 'workspace-a';
@@ -73,9 +76,11 @@ beforeEach(() => {
   mockCreateAgentRun.mockReset();
   mockUpdateAgentRunStatus.mockReset();
   mockAppendAgentStep.mockReset();
+  mockGetConflictPolicy.mockReset();
   mockCreateAgentRun.mockResolvedValue({ id: 'run-1' } as never);
   mockUpdateAgentRunStatus.mockResolvedValue({} as never);
   mockAppendAgentStep.mockResolvedValue({} as never);
+  mockGetConflictPolicy.mockResolvedValue({ strategy: 'flag_for_review', config: {} });
 });
 
 describe('runAgentQuery — best-effort DB observability', () => {
@@ -110,6 +115,23 @@ describe('runAgentQuery — best-effort DB observability', () => {
       'failed',
       expect.any(Date),
     );
+  });
+
+  it('still returns a valid answer, using the flag_for_review fallback, when getConflictPolicy throws', async () => {
+    mockGetConflictPolicy.mockRejectedValueOnce(new Error('DB unreachable'));
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => textStep('Paris is the capital of France.'),
+    });
+    const deps: AgentQueryDeps = { retriever: fakeRetriever(vi.fn()), model, db: FAKE_DB };
+
+    const answer = await runAgentQuery(
+      deps,
+      agentPrincipal(WORKSPACE_A),
+      WORKSPACE_A,
+      'capital of France?',
+    );
+
+    expect(answer.answer).toBe('Paris is the capital of France.');
   });
 
   it('still returns a valid answer when createAgentRun throws at the very start (DB unreachable)', async () => {

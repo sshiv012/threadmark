@@ -10,6 +10,7 @@ import {
   agentRuns,
   agentSteps,
   chunks,
+  conflictResolutionPolicies,
   evalJudgments,
   evalQueries,
   evalReports,
@@ -23,6 +24,8 @@ import {
   type AgentStepErrorCode,
   type AgentStepStatus,
   type Chunk,
+  type ConflictResolutionPolicy,
+  type ConflictResolutionStrategy,
   type DocumentStatus,
   type EvalJudgment,
   type EvalQuery,
@@ -518,6 +521,13 @@ export interface RetrievalChunk {
   documentTitle: string;
   sourceType: EvidenceSourceType;
   text: string;
+  /** The owning document's evidence_documents.createdAt (ingestion time, NOT
+   *  chunks.createdAt), as an ISO-8601 string — not a `Date` instance, so it
+   *  survives a JSON-serializing cache (e.g. RedisCache) unchanged instead of
+   *  silently becoming a string only after a cache hit. A weak proxy for
+   *  "which version is actually current" (a stale document re-ingested today
+   *  looks newest) — accepted as a known v1 limitation, not fixed here. */
+  createdAt: string;
 }
 
 /**
@@ -534,13 +544,14 @@ export async function getRetrievalChunksByIds(
   workspaceId: string,
 ): Promise<RetrievalChunk[]> {
   if (ids.length === 0) return [];
-  return db
+  const rows = await db
     .select({
       chunkId: chunks.id,
       documentId: chunks.documentId,
       documentTitle: evidenceDocuments.title,
       sourceType: evidenceDocuments.sourceType,
       text: chunks.text,
+      createdAt: evidenceDocuments.createdAt,
     })
     .from(chunks)
     .innerJoin(evidenceDocuments, eq(chunks.documentId, evidenceDocuments.id))
@@ -551,6 +562,7 @@ export async function getRetrievalChunksByIds(
         eq(evidenceDocuments.status, 'ready'),
       ),
     );
+  return rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
 }
 
 /**
@@ -674,4 +686,60 @@ export async function listEvalQueriesWithJudgments(
     byQueryId.set(j.queryId, list);
   }
   return queries.map((query) => ({ query, judgments: byQueryId.get(query.id) ?? [] }));
+}
+
+// ── Conflict-resolution policy (packages/agent) ──────────────────────────────
+const DEFAULT_CONFLICT_POLICY: Pick<ConflictResolutionPolicy, 'strategy' | 'config'> = {
+  strategy: 'flag_for_review',
+  config: {},
+};
+
+/**
+ * Returns the synthesized default ({strategy:'flag_for_review', config:{}})
+ * when a workspace has never configured a policy — no row is required to
+ * exist, and callers never see `undefined`. `flag_for_review` is the safest
+ * possible default: a workspace that never configures anything gets
+ * "surface the conflict, don't silently auto-pick," not a silent guess.
+ */
+export async function getConflictPolicy(
+  db: Database,
+  workspaceId: string,
+): Promise<Pick<ConflictResolutionPolicy, 'strategy' | 'config'>> {
+  const [row] = await db
+    .select({
+      strategy: conflictResolutionPolicies.strategy,
+      config: conflictResolutionPolicies.config,
+    })
+    .from(conflictResolutionPolicies)
+    .where(eq(conflictResolutionPolicies.workspaceId, workspaceId))
+    .limit(1);
+  return row ?? DEFAULT_CONFLICT_POLICY;
+}
+
+export interface UpsertConflictPolicyInput {
+  strategy: ConflictResolutionStrategy;
+  config?: unknown;
+}
+
+/** At most one row per workspace (unique workspaceId) — a re-PATCH updates
+ *  the existing row in place rather than creating a second one. */
+export async function upsertConflictPolicy(
+  db: Database,
+  workspaceId: string,
+  input: UpsertConflictPolicyInput,
+): Promise<ConflictResolutionPolicy> {
+  const config = input.config ?? {};
+  const [row] = await db
+    .insert(conflictResolutionPolicies)
+    .values({ workspaceId, strategy: input.strategy, config })
+    .onConflictDoUpdate({
+      target: conflictResolutionPolicies.workspaceId,
+      set: {
+        strategy: sql`excluded.strategy`,
+        config: sql`excluded.config`,
+        updatedAt: sql`now()`,
+      },
+    })
+    .returning();
+  return row!;
 }
