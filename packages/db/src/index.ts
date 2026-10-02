@@ -6,5 +6,6 @@
 export * from './schema.js';
 export * from './client.js';
 export * from './repositories.js';
+export * from './prd.js';
 
 export const PACKAGE_NAME = '@threadmark/db';
