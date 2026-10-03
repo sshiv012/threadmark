@@ -5,7 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { PgTable } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from './client.js';
 import {
   createPrd,
@@ -22,12 +22,19 @@ import * as schema from './schema.js';
 const migrationsFolder = fileURLToPath(new URL('../migrations', import.meta.url));
 
 let db: Database;
+let pg: PGlite | undefined;
 
 beforeEach(async () => {
-  const pg = new PGlite({ extensions: { vector } });
+  pg = new PGlite({ extensions: { vector } });
   const pgliteDb = drizzle(pg, { schema });
   await migrate(pgliteDb, { migrationsFolder });
   db = pgliteDb;
+});
+
+// Assigned before migrate(), so this still closes the instance if setup fails.
+afterEach(async () => {
+  await pg?.close();
+  pg = undefined;
 });
 
 /** Run a statement that must fail; return the Postgres SQLSTATE + constraint name. */
