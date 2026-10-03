@@ -338,6 +338,51 @@ describe('cascades and delete actions', () => {
     for (const table of PRD_TABLES) expect(await count(table)).toBe(1);
   });
 
+  /** A fork of the root branch that holds the block plus one version of its own. */
+  async function seedFork(s: Awaited<ReturnType<typeof seedVersioned>>, workspaceId: string) {
+    const [fork] = await db
+      .insert(schema.prdBranches)
+      .values({
+        prdId: s.prd.id,
+        workspaceId,
+        name: 'alt',
+        forkedFromBranchId: s.rootBranch.id,
+      })
+      .returning();
+    await db
+      .insert(schema.prdBranchBlocks)
+      .values({ prdId: s.prd.id, branchId: fork!.id, blockId: s.block.id, ord: 0 });
+    await db.insert(schema.prdBlockVersions).values({
+      blockId: s.block.id,
+      branchId: fork!.id,
+      seq: 1,
+      content: 'forked',
+      contentHash: 'h2',
+      authorKind: 'human',
+      authorSubjectId: 'u1',
+    });
+    return fork!;
+  }
+
+  it('deleting a PRD that has forks succeeds: the NO ACTION fork FK is checked after the whole cascade', async () => {
+    const { a } = await seedTwoWorkspaces();
+    const s = await seedVersioned(a.id, 'forked');
+    await seedFork(s, a.id);
+    await db.delete(schema.prds).where(eq(schema.prds.id, s.prd.id));
+    for (const table of PRD_TABLES) expect(await count(table)).toBe(0);
+  });
+
+  it('deleting a branch cascades its associations and versions but keeps the block and other branches', async () => {
+    const { a } = await seedTwoWorkspaces();
+    const s = await seedVersioned(a.id, 'P');
+    const fork = await seedFork(s, a.id);
+    await db.delete(schema.prdBranches).where(eq(schema.prdBranches.id, fork.id));
+    expect(await count(schema.prdBlocks)).toBe(1);
+    expect(await count(schema.prdBranchBlocks)).toBe(1);
+    expect(await count(schema.prdBlockVersions)).toBe(1);
+    expect(await getPrdBranch(db, a.id, s.rootBranch.id)).toBeDefined();
+  });
+
   it('a fork source cannot be deleted while a fork exists; deleting the fork keeps blocks and the source branch data', async () => {
     const { a } = await seedTwoWorkspaces();
     const { prd, rootBranch, block } = await seedVersioned(a.id, 'P');
