@@ -11,6 +11,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -18,6 +19,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   vector,
@@ -94,6 +96,9 @@ export const conflictResolutionStrategy = pgEnum('conflict_resolution_strategy',
   'highest_priority_source',
   'flag_for_review',
 ]);
+
+export const prdStatus = pgEnum('prd_status', ['active', 'archived']);
+export const prdBranchStatus = pgEnum('prd_branch_status', ['active', 'merged', 'abandoned']);
 
 // ── Tables ───────────────────────────────────────────────────────────────────
 export const workspaces = pgTable('workspaces', {
@@ -307,6 +312,143 @@ export const conflictResolutionPolicies = pgTable('conflict_resolution_policies'
 });
 
 // ── Inferred types ───────────────────────────────────────────────────────────
+// ── PRD persistence (MVP-1a; design: docs/architecture-collab-prd.md §2) ─────
+// Cross-parent integrity is enforced by the database with composite foreign
+// keys (child carries the parent's scope columns), so a row can never pair a
+// branch, block or version with a different PRD/workspace than its parent.
+
+export const prds = pgTable(
+  'prds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    status: prdStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('prds_workspace_idx').on(t.workspaceId),
+    unique('prds_id_workspace_uniq').on(t.id, t.workspaceId), // composite-FK target
+  ],
+);
+
+export const prdBranches = pgTable(
+  'prd_branches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    prdId: uuid('prd_id').notNull(),
+    workspaceId: uuid('workspace_id').notNull(), // denormalized for workspace-scoped reads
+    name: text('name').notNull(),
+    // Lineage only (NOT a merge target). Null for the PRD's root branch. NO ACTION
+    // on delete: a composite FK cannot SET NULL without nulling prd_id, so a fork
+    // source cannot be deleted while a fork exists (deleting the whole PRD is fine).
+    forkedFromBranchId: uuid('forked_from_branch_id'),
+    status: prdBranchStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'prd_branches_prd_workspace_fk',
+      columns: [t.prdId, t.workspaceId],
+      foreignColumns: [prds.id, prds.workspaceId],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'prd_branches_fork_source_fk',
+      columns: [t.forkedFromBranchId, t.prdId],
+      foreignColumns: [t.id, t.prdId],
+    }),
+    check('prd_branches_no_self_fork', sql`${t.forkedFromBranchId} <> ${t.id}`),
+    unique('prd_branches_id_prd_uniq').on(t.id, t.prdId), // composite-FK target
+    uniqueIndex('prd_branches_prd_name_uniq').on(t.prdId, t.name),
+    // At most one root per PRD. createPrd creates it; the index alone does not
+    // guarantee one exists.
+    uniqueIndex('prd_branches_root_uniq')
+      .on(t.prdId)
+      .where(sql`forked_from_branch_id IS NULL`),
+    index('prd_branches_workspace_idx').on(t.workspaceId),
+  ],
+);
+
+// Stable block identity, PRD-scoped (no owning branch). Per-branch presence lives
+// in prdBranchBlocks and per-branch content in prdBlockVersions.
+export const prdBlocks = pgTable(
+  'prd_blocks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    prdId: uuid('prd_id')
+      .notNull()
+      .references(() => prds.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('prd_blocks_prd_idx').on(t.prdId),
+    unique('prd_blocks_id_prd_uniq').on(t.id, t.prdId), // composite-FK target
+  ],
+);
+
+export const prdBranchBlocks = pgTable(
+  'prd_branch_blocks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    prdId: uuid('prd_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    blockId: uuid('block_id').notNull(),
+    ord: integer('ord').notNull(), // display position, not identity
+    removedAt: timestamp('removed_at', { withTimezone: true }), // soft-delete from THIS branch only
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'prd_branch_blocks_branch_fk',
+      columns: [t.branchId, t.prdId],
+      foreignColumns: [prdBranches.id, prdBranches.prdId],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'prd_branch_blocks_block_fk',
+      columns: [t.blockId, t.prdId],
+      foreignColumns: [prdBlocks.id, prdBlocks.prdId],
+    }).onDelete('cascade'),
+    check('prd_branch_blocks_ord_nonneg', sql`${t.ord} >= 0`),
+    unique('prd_branch_blocks_branch_block_uniq').on(t.branchId, t.blockId), // also the version FK target
+    uniqueIndex('prd_branch_blocks_branch_ord_uniq')
+      .on(t.branchId, t.ord)
+      .where(sql`removed_at IS NULL`),
+  ],
+);
+
+// Content is branch-scoped. NOTE: `content` is plain text per the design doc; the
+// text-vs-structured (Tiptap JSON) decision is revisited before the version-append
+// slice, so treat the column type as provisional.
+export const prdBlockVersions = pgTable(
+  'prd_block_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    blockId: uuid('block_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    seq: integer('seq').notNull(), // per-(block, branch) version number; allocation lands with append
+    content: text('content').notNull(),
+    contentHash: text('content_hash').notNull(),
+    authorKind: text('author_kind').notNull(), // 'human' | 'agent_persona'
+    authorSubjectId: text('author_subject_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // A version must hang off an existing branch-block association, not merely an
+    // independently valid block and branch.
+    foreignKey({
+      name: 'prd_block_versions_assoc_fk',
+      columns: [t.branchId, t.blockId],
+      foreignColumns: [prdBranchBlocks.branchId, prdBranchBlocks.blockId],
+    }).onDelete('cascade'),
+    check('prd_block_versions_seq_pos', sql`${t.seq} >= 1`),
+    check('prd_block_versions_author_kind', sql`${t.authorKind} IN ('human', 'agent_persona')`),
+    uniqueIndex('prd_block_versions_seq_uniq').on(t.blockId, t.branchId, t.seq),
+  ],
+);
+
 export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
 export type User = typeof users.$inferSelect;
@@ -340,3 +482,11 @@ export type AgentStepStatus = (typeof agentStepStatus.enumValues)[number];
 export type AgentStepErrorCode = (typeof agentStepErrorCode.enumValues)[number];
 export type EvalReportKind = (typeof evalReportKind.enumValues)[number];
 export type ConflictResolutionStrategy = (typeof conflictResolutionStrategy.enumValues)[number];
+
+export type Prd = typeof prds.$inferSelect;
+export type PrdBranch = typeof prdBranches.$inferSelect;
+export type PrdBlock = typeof prdBlocks.$inferSelect;
+export type PrdBranchBlock = typeof prdBranchBlocks.$inferSelect;
+export type PrdBlockVersion = typeof prdBlockVersions.$inferSelect;
+export type PrdStatus = (typeof prdStatus.enumValues)[number];
+export type PrdBranchStatus = (typeof prdBranchStatus.enumValues)[number];
